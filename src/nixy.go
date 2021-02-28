@@ -129,9 +129,9 @@ type Health struct {
 }
 
 // Global variables
-var version = "0.3" //set by ldflags
-var date string        //set by ldflags
-var commit string      //set by ldflags
+var version = "0.4"                       //set by ldflags
+var date = "Sun Feb 28 23:17:00 IST 2021" //set by ldflags
+var commit = "SREINFRA-755"               //set by ldflags
 var config = Config{LeftDelimiter: "{{", RightDelimiter: "}}"}
 var statsd g2s.Statter
 var health Health
@@ -143,23 +143,6 @@ var eventqueue = make(chan bool, 2)
 
 // Global http transport for connection reuse
 var tr = &http.Transport{MaxIdleConnsPerHost: 10}
-
-func (c *Config) MergeAppsByLabel(label string) map[string]App {
-	apps := make(map[string]App, 0)
-	labeledApps := make(map[string][]App, 0)
-	for appID, app := range c.Apps {
-		if labelValue, has := app.Labels[label]; has {
-			labeledApps[labelValue] = append(labeledApps[labelValue], app)
-		} else {
-			apps[appID] = app
-		}
-	}
-
-	for id, appGroup := range labeledApps {
-		apps[id] = mergeApps(appGroup)
-	}
-	return apps
-}
 
 func mergeApps(apps []App) App {
 	tasks := make([]Task, 0)
@@ -210,7 +193,7 @@ func newHealth() Health {
 		s.Message = "OK"
 		h.Endpoints = append(h.Endpoints, s)
 	}
-	//fmt.Println(h)
+
 	return h
 }
 
@@ -231,24 +214,6 @@ func nixyReload(w http.ResponseWriter, r *http.Request) {
 }
 
 func nixyHealth(w http.ResponseWriter, r *http.Request) {
-	err := checkTmpl()
-	if err != nil {
-		health.Template.Message = err.Error()
-		health.Template.Healthy = false
-		w.WriteHeader(http.StatusInternalServerError)
-	} else {
-		health.Template.Message = "OK"
-		health.Template.Healthy = true
-	}
-	err = checkConf(lastConfig)
-	if err != nil {
-		health.Config.Message = err.Error()
-		health.Config.Healthy = false
-		w.WriteHeader(http.StatusInternalServerError)
-	} else {
-		health.Config.Message = "OK"
-		health.Config.Healthy = true
-	}
 	allBackendsDown := true
 	for _, endpoint := range health.Endpoints {
 		if endpoint.Healthy {

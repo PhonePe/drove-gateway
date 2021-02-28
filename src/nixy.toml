@@ -18,7 +18,7 @@ nginx_cmd = "nginx" # optionally "openresty" or "docker exec nginx nginx"
 nginx_ignore_check = true # optionally disable nginx config test. Health check will always show OK.
 #left_delimiter = "{{" # if you want to change the default template delimiters
 #right_delimiter = "}}" # if you want to change the default template delimiters
-traefikbackend = ["nixy-marathon-events" , "traefiklabeldebug", "settlementService", "nixy-demo"]
+traefikbackend = ["nixy-demo"]
 nginxplusapiaddr = "10.57.11.218"
 
 # Statsd settings
