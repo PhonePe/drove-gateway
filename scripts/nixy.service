@@ -1,0 +1,15 @@
+[Unit]
+Description=nixy - nginx marathon/mesos proxy
+After=network.target
+StartLimitIntervalSec=0
+[Service]
+LimitNOFILE=65000
+LimitNPROC=65000
+Type=simple
+Restart=always
+RestartSec=1
+User=root
+ExecStart=/usr/bin/nixy -f /etc/nixy/nixy.toml 2>&1 | logger -t nixy
+
+[Install]
+WantedBy=multi-user.target
