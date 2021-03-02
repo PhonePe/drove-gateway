@@ -19,7 +19,7 @@ nginx_ignore_check = true # optionally disable nginx config test. Health check w
 #left_delimiter = "{{" # if you want to change the default template delimiters
 #right_delimiter = "}}" # if you want to change the default template delimiters
 traefikbackend = ["nixy-demo"]
-nginxplusapiaddr = "10.57.11.218"
+nginxplusapiaddr = "localhost"
 
 # Statsd settings
 #[statsd]
