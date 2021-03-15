@@ -1,5 +1,6 @@
 set -x
 export PATH="$PATH:/usr/local/go/bin"
+cd ..
 export GOPATH=export GOPATH=$PWD
 export PATH=$PATH:$GOPATH/bin
 export GOROOT=/usr/local/go
