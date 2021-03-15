@@ -18,8 +18,10 @@ nginx_cmd = "nginx" # optionally "openresty" or "docker exec nginx nginx"
 nginx_ignore_check = true # optionally disable nginx config test. Health check will always show OK.
 #left_delimiter = "{{" # if you want to change the default template delimiters
 #right_delimiter = "}}" # if you want to change the default template delimiters
+
+traefiklabel = "traefik.backend"
 traefikbackend = ["nixy-demo"]
-nginxplusapiaddr = "localhost"
+nginxplusapiaddr = "10.57.11.218:2222"
 
 # Statsd settings
 #[statsd]
