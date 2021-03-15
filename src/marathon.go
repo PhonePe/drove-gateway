@@ -254,9 +254,9 @@ func syncApps(jsonapps *MarathonApps) bool {
 	defer config.Unlock()
 	apps := make(map[string]App)
 	for _, app := range jsonapps.Apps {
-		traefikbackendlabel := app.Labels["traefik.backend"]
-		for _, traefikbackend := range config.Traefikbackend {
-			if traefikbackend == traefikbackendlabel {
+		traefikBackendLabel := app.Labels[config.TraefikLabel]
+		for _, traefikBackend := range config.Traefikbackend {
+			if traefikBackend == traefikBackendLabel {
 				var newapp = App{}
 				if config.Realm != "" && app.Labels["NIXY_REALM"] != config.Realm {
 					continue
@@ -389,19 +389,18 @@ func syncApps(jsonapps *MarathonApps) bool {
 		return true
 	}
 	config.Apps = apps
-	mergeappsbytraefikbackendlabels(apps)
+	mergeAppsByTraefikBackendLabels(apps)
 
 	return false
 }
 
-func mergeappsbytraefikbackendlabels(apps map[string]App) {
+func mergeAppsByTraefikBackendLabels(apps map[string]App) {
 	logger.WithFields(logrus.Fields{}).Info("Merging apps based on traefik.backend marathon label")
-	label := "traefik.backend"
-	newapps := make(map[string]App, 0)
+	newApps := make(map[string]App, 0)
 	labeledApps := make(map[string][]App, 0)
 
 	for appID, app := range apps {
-		if labelValue, has := app.Labels[label]; has {
+		if labelValue, has := app.Labels[config.TraefikLabel]; has {
 			labeledApps[labelValue] = append(labeledApps[labelValue], app)
 		} else {
 			apps[appID] = app
@@ -409,21 +408,20 @@ func mergeappsbytraefikbackendlabels(apps map[string]App) {
 	}
 
 	for id, appGroup := range labeledApps {
-		newapps[id] = mergeApps(appGroup)
+		newApps[id] = mergeApps(appGroup)
 	}
 
-	nginxPlus(newapps)
+	nginxPlus(newApps)
 }
 
 func nginxPlus(apps map[string]App) {
 	logger.WithFields(logrus.Fields{}).Info("Updating upstreams for the whitelisted marathon labels")
 	for _, app := range apps {
-		traefikbackendlabel := app.Labels["traefik.backend"]
-		var newformattedServers []string
+		traefikBackendLabel := app.Labels[config.TraefikLabel]
+		var newFormattedServers []string
 		for _, t := range app.Tasks {
-			var hostandportmapping string
-			iprecords, error := net.LookupHost(string(t.Host))
-			iprecord := iprecords[0]
+			var hostAndPortMapping string
+			ipRecords, error := net.LookupHost(string(t.Host))
 			if error != nil {
 				logger.WithFields(logrus.Fields{
 					"error":    error,
@@ -431,17 +429,18 @@ func nginxPlus(apps map[string]App) {
 				}).Error("dns lookup failed !! skipping the hostname")
 				continue
 			}
-			hostandportmapping = iprecord + ":" + strconv.Itoa(int(t.Ports[0]))
-			newformattedServers = append(newformattedServers, hostandportmapping)
+			ipRecord := ipRecords[0]
+			hostAndPortMapping = ipRecord + ":" + strconv.Itoa(int(t.Ports[0]))
+			newFormattedServers = append(newFormattedServers, hostAndPortMapping)
 
 		}
 
 		logger.WithFields(logrus.Fields{
-			"traefik.backend": traefikbackendlabel,
+			"traefik.backend": traefikBackendLabel,
 		}).Info("traefik.backend")
 
 		logger.WithFields(logrus.Fields{
-			"upstreams": newformattedServers,
+			"upstreams": newFormattedServers,
 		}).Info("nginx upstreams")
 
 		endpoint := "http://" + config.Nginxplusapiaddr + "/api"
@@ -455,12 +454,12 @@ func nginxPlus(apps map[string]App) {
 		c := NginxClient{endpoint, client}
 		newclient, error := NewNginxClient(c.httpClient, c.apiEndpoint)
 
-		upstreamtocheck := traefikbackendlabel
+		upstreamtocheck := traefikBackendLabel
 		var finalformattedServers []UpstreamServer
 
-		for _, server := range newformattedServers {
-			server := UpstreamServer{Server: server}
-			finalformattedServers = append(finalformattedServers, server)
+		for _, server := range newFormattedServers {
+			formattedServer := UpstreamServer{Server: server}
+			finalformattedServers = append(finalformattedServers, formattedServer)
 		}
 
 		added, deleted, updated, error := newclient.UpdateHTTPServers(upstreamtocheck, finalformattedServers)

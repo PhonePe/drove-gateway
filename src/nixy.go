@@ -80,6 +80,7 @@ type Config struct {
 	Marathon         []string `json:"-"`
 	Traefikbackend   []string `json:"-"`
 	Nginxplusapiaddr string   `json:"-"`
+	TraefikLabel     string   `json:"-"`
 	User             string   `json:"-"`
 	Pass             string   `json:"-"`
 	NginxConfig      string   `json:"-" toml:"nginx_config"`
@@ -129,8 +130,8 @@ type Health struct {
 }
 
 // Global variables
-var version = "0.4"                       //set by ldflags
-var date = "Sun Feb 28 23:17:00 IST 2021" //set by ldflags
+var version = "0.5"                       //set by ldflags
+var date = "Tue Mar 16 01:28:04 IST 2021" //set by ldflags
 var commit = "SREINFRA-755"               //set by ldflags
 var config = Config{LeftDelimiter: "{{", RightDelimiter: "}}"}
 var statsd g2s.Statter
@@ -160,9 +161,15 @@ func mergeApps(apps []App) App {
 			env[k] = v
 		}
 		for _, h := range app.Hosts {
+			logger.WithFields(logrus.Fields{
+				"app.Hosts": h,
+			}).Info("app.Hosts")
 			hosts = append(hosts, h)
 		}
 		for _, t := range app.Tasks {
+			logger.WithFields(logrus.Fields{
+				"app.Tasks": t,
+			}).Info("app.Tasks")
 			t.Labels = app.Labels
 			tasks = append(tasks, t)
 		}
