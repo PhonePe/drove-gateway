@@ -1,0 +1,30 @@
+# Nixy listening port
+port = "6000"
+# X-Proxy header, defaults to hostname
+xproxy = ""
+
+# Marathon API
+marathon = ["http://stg-appmesosm001.phonepe.nb6:8080", "http://stg-appmesosm002.phonepe.nb6:8080" , "http://stg-appmesosm003.phonepe.nb6:8080"] # add all HA cluster nodes in priority order.
+user = "" # leave empty if no auth is required.
+pass = ""
+# Nixy realm, set this if you want to be able to filter your apps (e.g. when you have different loadbalancers which should expose different apps)
+# You will also need to set "NIXY_REALM" label at your app to be included in generated conf
+realm = ""
+
+# Nginx
+nginx_config = "nixy_upstreams.conf"
+nginx_template = "nginx.tmpl"
+nginx_cmd = "nginx" # optionally "openresty" or "docker exec nginx nginx"
+nginx_ignore_check = true # optionally disable nginx config test. Health check will always show OK.
+#left_delimiter = "{{" # if you want to change the default template delimiters
+#right_delimiter = "}}" # if you want to change the default template delimiters
+
+traefiklabel = "traefik.backend"
+traefikbackend = ["nixy-demo"]
+nginxplusapiaddr = "10.57.11.218:2222"
+
+# Statsd settings
+#[statsd]
+#addr = "10.57.8.171:8125" # optional for statistics
+#namespace = "nixy.my_mesos_cluster"
+#sample_rate = 100
