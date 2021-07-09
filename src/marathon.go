@@ -458,7 +458,7 @@ func nginxPlus(apps map[string]App) {
 		var finalformattedServers []UpstreamServer
 
 		for _, server := range newFormattedServers {
-			formattedServer := UpstreamServer{Server: server}
+			formattedServer := UpstreamServer{Server: server, MaxFails: config.MaxFailsUpstream, FailTimeout: config.FailTimeoutUpstream, SlowStart: config.SlowStartUpstream}
 			finalformattedServers = append(finalformattedServers, formattedServer)
 		}
 
