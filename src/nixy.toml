@@ -22,6 +22,9 @@ nginx_ignore_check = true # optionally disable nginx config test. Health check w
 traefiklabel = "traefik.backend"
 traefikbackend = ["nixy-demo"]
 nginxplusapiaddr = "10.57.11.218:2222"
+maxfailsupstream = 0
+failtimeoutupstream = "10s"
+slowstartupstream = "0s"
 
 # Statsd settings
 #[statsd]

@@ -74,24 +74,27 @@ type App struct {
 // Config struct used by the template engine
 type Config struct {
 	sync.RWMutex
-	Xproxy           string
-	Realm            string
-	Port             string   `json:"-"`
-	Marathon         []string `json:"-"`
-	Traefikbackend   []string `json:"-"`
-	Nginxplusapiaddr string   `json:"-"`
-	TraefikLabel     string   `json:"-"`
-	User             string   `json:"-"`
-	Pass             string   `json:"-"`
-	NginxConfig      string   `json:"-" toml:"nginx_config"`
-	NginxTemplate    string   `json:"-" toml:"nginx_template"`
-	NginxCmd         string   `json:"-" toml:"nginx_cmd"`
-	NginxIgnoreCheck bool     `json:"-" toml:"nginx_ignore_check"`
-	LeftDelimiter    string   `json:"-" toml:"left_delimiter"`
-	RightDelimiter   string   `json:"-" toml:"right_delimiter"`
-	Statsd           StatsdConfig
-	LastUpdates      Updates
-	Apps             map[string]App
+	Xproxy              string
+	Realm               string
+	Port                string   `json:"-"`
+	Marathon            []string `json:"-"`
+	Traefikbackend      []string `json:"-"`
+	Nginxplusapiaddr    string   `json:"-"`
+	TraefikLabel        string   `json:"-"`
+	User                string   `json:"-"`
+	Pass                string   `json:"-"`
+	NginxConfig         string   `json:"-" toml:"nginx_config"`
+	NginxTemplate       string   `json:"-" toml:"nginx_template"`
+	NginxCmd            string   `json:"-" toml:"nginx_cmd"`
+	NginxIgnoreCheck    bool     `json:"-" toml:"nginx_ignore_check"`
+	LeftDelimiter       string   `json:"-" toml:"left_delimiter"`
+	RightDelimiter      string   `json:"-" toml:"right_delimiter"`
+	MaxFailsUpstream    *int     `json:"max_fails,omitempty"`
+	FailTimeoutUpstream string   `json:"fail_timeout,omitempty"`
+	SlowStartUpstream   string   `json:"slow_start,omitempty"`
+	Statsd              StatsdConfig
+	LastUpdates         Updates
+	Apps                map[string]App
 }
 
 // Updates timings used for metrics
@@ -130,9 +133,9 @@ type Health struct {
 }
 
 // Global variables
-var version = "0.5"                       //set by ldflags
-var date = "Tue Mar 16 01:28:04 IST 2021" //set by ldflags
-var commit = "SREINFRA-755"               //set by ldflags
+var version = "0.6"                       //set by ldflags
+var date = "Fri Jul  9 17:56:01 IST 2021" //set by ldflags
+var commit = "SREINFRA-1124"              //set by ldflags
 var config = Config{LeftDelimiter: "{{", RightDelimiter: "}}"}
 var statsd g2s.Statter
 var health Health
