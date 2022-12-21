@@ -66,25 +66,25 @@ var (
 			Help:      "Total number of all endpoints down errors",
 		},
 	)
-	countMarathonStreamErrors = prometheus.NewCounter(
+	countDroveStreamErrors = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: ns,
-			Name:      "marathon_stream_errors",
-			Help:      "Total number of Marathon stream errors",
+			Name:      "drove_stream_errors",
+			Help:      "Total number of Drove stream errors",
 		},
 	)
-	countMarathonStreamNoDataWarnings = prometheus.NewCounter(
+	countDroveStreamNoDataWarnings = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: ns,
-			Name:      "marathon_stream_no_data_warnings",
-			Help:      "Total number of warnings about no data in Marathon stream",
+			Name:      "drove_stream_no_data_warnings",
+			Help:      "Total number of warnings about no data in Drove stream",
 		},
 	)
-	countMarathonEventsReceived = prometheus.NewCounter(
+	countDroveEventsReceived = prometheus.NewCounter(
 		prometheus.CounterOpts{
 			Namespace: ns,
-			Name:      "marathon_events_received",
-			Help:      "Total number of received Marathon events",
+			Name:      "drove_events_received",
+			Help:      "Total number of received Drove events",
 		},
 	)
 )
@@ -98,9 +98,9 @@ func setupPrometheusMetrics() {
 	prometheus.MustRegister(countEndpointCheckFails)
 	prometheus.MustRegister(countEndpointDownErrors)
 	prometheus.MustRegister(countAllEndpointsDownErrors)
-	prometheus.MustRegister(countMarathonStreamErrors)
-	prometheus.MustRegister(countMarathonStreamNoDataWarnings)
-	prometheus.MustRegister(countMarathonEventsReceived)
+	prometheus.MustRegister(countDroveStreamErrors)
+	prometheus.MustRegister(countDroveStreamNoDataWarnings)
+	prometheus.MustRegister(countDroveEventsReceived)
 }
 
 func observeReloadTimeMetric(e time.Duration) {
