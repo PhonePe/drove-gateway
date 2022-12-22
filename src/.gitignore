@@ -1,0 +1,11 @@
+nixy-nplus
+*local*
+dist
+nginx*.conf
+.nginx.conf.tmp-*
+nixy-go.ai
+.idea
+*.zip
+
+# Vim's swap
+*.sw[a-z]

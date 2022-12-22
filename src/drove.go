@@ -161,42 +161,54 @@ func pollEvents() {
             },
         }
         syncData := CurrSyncPoint{}
-        ticker := time.NewTicker(1 * time.Second)
+        refreshInterval := 2
+        if config.EventRefreshIntervalSec != 0 {
+            refreshInterval = config.EventRefreshIntervalSec
+        }
+        ticker := time.NewTicker(time.Duration(refreshInterval) * time.Second)
         for range ticker.C {
-            refreshLeaderData()
-            var newEvents = DroveEvents{}
-            err := fetchRecentEvents(client, &newEvents, &syncData)
-            if err != nil {
+            func () {
                 logger.WithFields(logrus.Fields{
-                    "error": err.Error(),
-                }).Error("unable to sync events from drove")
-            } else {
-                if len(newEvents.Events) > 0 {
+                    "at": time.Now(),
+                }).Info("Syncing...")
+                syncData.Lock()
+                defer syncData.Unlock()
+                refreshLeaderData()
+                var newEvents = DroveEvents{}
+                err := fetchRecentEvents(client, &newEvents, &syncData)
+                if err != nil {
                     logger.WithFields(logrus.Fields{
-                        "events": newEvents.Events,
-                    }).Debug("Events received")
-                    reloadNeeded := false
-                    for _, event := range newEvents.Events {
-                        switch eventType := event.Type; eventType {
-                            case "APP_STATE_CHANGE","INSTANCE_STATE_CHANGE": {
-                                reloadNeeded = true
-                            }
-                            default: {
-                                logger.WithFields(logrus.Fields{
-                                    "type": eventType,
-                                }).Info("Event ignored")
+                        "error": err.Error(),
+                    }).Error("unable to sync events from drove")
+                } else {
+                    if len(newEvents.Events) > 0 {
+                        logger.WithFields(logrus.Fields{
+                            "events": newEvents.Events,
+                        }).Debug("Events received")
+                        reloadNeeded := false
+                        for _, event := range newEvents.Events {
+                            switch eventType := event.Type; eventType {
+                                case "APP_STATE_CHANGE","INSTANCE_STATE_CHANGE": {
+                                    reloadNeeded = true
+                                }
+                                default: {
+                                    logger.WithFields(logrus.Fields{
+                                        "type": eventType,
+                                    }).Info("Event ignored")
+                                }
                             }
                         }
-                    }
-                    if reloadNeeded {
-                        select {
-                            case eventqueue <- true: // add reload to our queue channel, unless it is full of course.
-                            default:
-                                logger.Warn("queue is full")
+                        if reloadNeeded {
+                            select {
+                                case eventqueue <- true: // add reload to our queue channel, unless it is full of course.
+                                default:
+                                    logger.Warn("queue is full")
+                            }
                         }
                     }
                 }
-            }
+                return
+            }()
         }
     }()
 }

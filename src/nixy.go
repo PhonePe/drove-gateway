@@ -47,7 +47,8 @@ type Config struct {
     Xproxy           string
     Realm            string
     Port             string   `json:"-"`
-    Drove         []string    `json:"-"`
+    Drove            []string    `json:"-"`
+    EventRefreshIntervalSec int `json:"-"  toml:"event_refresh_interval_sec"`
     User             string   `json:"-"`
     Pass             string   `json:"-"`
     AccessToken      string   `json:"-" toml:"access_token"`
