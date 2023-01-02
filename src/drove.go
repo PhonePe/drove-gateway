@@ -160,7 +160,7 @@ func pollEvents() {
 		}
 		syncData := CurrSyncPoint{}
 		refreshInterval := 2
-		if config.EventRefreshIntervalSec != 0 {
+		if config.EventRefreshIntervalSec > 0 {
 			refreshInterval = config.EventRefreshIntervalSec
 		}
 		ticker := time.NewTicker(time.Duration(refreshInterval) * time.Second)
