@@ -168,7 +168,7 @@ func pollEvents() {
 			func() {
 				logger.WithFields(logrus.Fields{
 					"at": time.Now(),
-				}).Info("Syncing...")
+				}).Debug("Syncing...")
 				syncData.Lock()
 				defer syncData.Unlock()
 				refreshLeaderData()
