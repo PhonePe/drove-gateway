@@ -334,10 +334,26 @@ func fetchApps(jsonapps *DroveApps) error {
 	return nil
 }
 
+func matchingVhost(vHost string, realms []string) bool {
+    if len(realms) == 0 {
+        return true
+    }
+    for _, realm := range realms {
+        if strings.HasSuffix(vHost, strings.TrimSpace(realm)) {
+            return true
+        }
+    }
+    return false
+}
+
 func syncApps(jsonapps *DroveApps) bool {
 	config.Lock()
 	defer config.Unlock()
 	apps := make(map[string]App)
+    var realms = []string{}
+    if(len(config.Realm) > 0) {
+        realms = strings.Split(config.Realm, ",")
+    }
 	for _, app := range jsonapps.Apps {
 		var newapp = App{}
 		for _, task := range app.Hosts {
@@ -349,7 +365,7 @@ func syncApps(jsonapps *DroveApps) bool {
 		}
 		// Lets ignore apps if no tasks are available
 		if len(newapp.Hosts) > 0 {
-			var toAppend = len(config.Realm) == 0 || strings.HasSuffix(app.Vhost, config.Realm)
+			var toAppend = matchingVhost(app.Vhost, realms)
 			if toAppend {
 				newapp.ID = app.Vhost
 				newapp.Vhost = app.Vhost
