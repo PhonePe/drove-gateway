@@ -339,7 +339,7 @@ func matchingVhost(vHost string, realms []string) bool {
         return true
     }
     for _, realm := range realms {
-        if strings.HasSuffix(vHost, strings.TrimSpace(realm)) {
+        if vHost == strings.TrimSpace(realm) {
             return true
         }
     }
