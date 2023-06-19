@@ -5,7 +5,8 @@ export GOPATH=export GOPATH=$PWD
 export PATH=$PATH:$GOPATH/bin
 export GOROOT=/usr/local/go
 export PATH=$PATH:$GOROOT/bin
-cd ../src/ && go build -o nixy
+go mod tidy
+cd ../src/ && go build -ldflags="-X 'main.version=build-$(date +%Y%m%d%H%M%S)' -X 'main.date=$(date +"%Y-%m-%d %H:%M:%S")' -X 'main.commit=$(git rev-parse --abbrev-ref HEAD)-$(git rev-parse HEAD)'" -o nixy
 DATE_WITH_TIME=`date "+%Y%m%d-%H%M%S"` #add %3N as we want millisecond too
 mv /usr/bin/nixy /usr/bin/nixy-$DATE_WITH_TIME
 ls -lath /usr/bin/nixy-$DATE_WITH_TIME
