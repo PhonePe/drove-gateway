@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/Sirupsen/logrus"
+	"github.com/sirupsen/logrus"
 	"github.com/avast/retry-go"
 	"github.com/gorilla/mux"
 	"github.com/peterbourgon/g2s"
