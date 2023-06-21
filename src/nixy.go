@@ -13,11 +13,11 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
-	"github.com/Sirupsen/logrus"
 	"github.com/avast/retry-go"
 	"github.com/gorilla/mux"
 	"github.com/peterbourgon/g2s"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sirupsen/logrus"
 )
 
 // Host struct
@@ -27,18 +27,28 @@ type Host struct {
 	PortType string
 }
 
-// App struct
-type App struct {
-	ID    string
-	Vhost string
+type HostGroup struct {
 	Hosts []Host
 	Tags  map[string]string
+}
+
+// App struct
+type App struct {
+	ID     string
+	Vhost  string
+	Hosts  []Host
+	Tags   map[string]string
+	Groups map[string]HostGroup
 }
 
 type LeaderController struct {
 	Endpoint string
 	Host     string
 	Port     int32
+}
+
+type Vhosts struct {
+	Vhosts map[string]bool
 }
 
 // Config struct used by the template engine
@@ -53,17 +63,25 @@ type Config struct {
 	Pass                    string   `json:"-"`
 	AccessToken             string   `json:"-" toml:"access_token"`
 	Nginxplusapiaddr        string   `json:"-"`
+	NginxReloadDisabled     bool     `json:"-" toml:"nginx_reload_disabled"`
+	NginxConfig             string   `json:"-" toml:"nginx_config"`
+	NginxTemplate           string   `json:"-" toml:"nginx_template"`
+	NginxCmd                string   `json:"-" toml:"nginx_cmd"`
+	NginxIgnoreCheck        bool     `json:"-" toml:"nginx_ignore_check"`
+	LeftDelimiter           string   `json:"-" toml:"left_delimiter"`
+	RightDelimiter          string   `json:"-" toml:"right_delimiter"`
 	MaxFailsUpstream        *int     `json:"max_fails,omitempty"`
 	FailTimeoutUpstream     string   `json:"fail_timeout,omitempty"`
 	SlowStartUpstream       string   `json:"slow_start,omitempty"`
-	LeftDelimiter           string   `json:"-" toml:"left_delimiter"`
-	RightDelimiter          string   `json:"-" toml:"right_delimiter"`
-	apiTimeout              int      `json:"-" toml:"api_timeout"`
-	LeaderVHost             string   `json:"-" toml:"leader_vhost"`
-	Leader                  LeaderController
-	Statsd                  StatsdConfig
-	LastUpdates             Updates
-	Apps                    map[string]App
+
+	apiTimeout  int    `json:"-" toml:"api_timeout"`
+	LeaderVHost string `json:"-" toml:"leader_vhost"`
+	RoutingTag  string `json:"-" toml:"routing_tag"`
+	Leader      LeaderController
+	Statsd      StatsdConfig
+	LastUpdates Updates
+	Apps        map[string]App
+	KnownVHosts Vhosts
 }
 
 // Updates timings used for metrics

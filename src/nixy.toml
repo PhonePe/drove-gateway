@@ -4,20 +4,24 @@ port = "6000"
 xproxy = ""
 
 # Drove API
-#drove = ["http://localhost:10000"] # add all HA cluster nodes in priority order.
+drove = ["http://localhost:10000"] # add all HA cluster nodes in priority order.
 #drove = ["http://localhost:4000", "http://localhost:5000"] # add all HA cluster nodes in priority order.
-drove = ["https://stg-nb6.drove.phonepe.com:443"] # add all HA cluster nodes in priority order.
+#drove = ["https://stg-nb6.drove.phonepe.com:443"] # add all HA cluster nodes in priority order.
 event_refresh_interval_sec = 5
 user = "" # leave empty if no auth is required.
 pass = ""
 access_token = "O-Bearer OLYMPUS_TOKEN"
 # Nixy realm, set this if you want to be able to filter your apps (e.g. when you have different loadbalancers which should expose different apps)
 # Put your subdomain here. It will be used to match the subdomain of the exposed apps
-realm = "api.nixy.stg-drove.phonepe.nb6"
+#realm = "api.nixy.stg-drove.phonepe.nb6"
 
 # Nginx
 #nginxplusapiaddr="127.0.0.1"
 nginxplusapiaddr="stg-nginx301.phonepe.nb6"
+nginx_config = "./nginx-test.conf"
+nginx_template = "./nginx-header.tmpl"
+nginx_cmd = "nginx" # optionally "openresty" or "docker exec nginx nginx"
+nginx_ignore_check = true # optionally disable nginx config test. Health check will always show OK.
 
 traefiklabel = "traefik.backend"
 traefikbackend = ["nixy-demo"]
