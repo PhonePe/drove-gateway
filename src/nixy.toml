@@ -1,5 +1,11 @@
 # Nixy listening port
+address = "127.0.0.1"
 port = "6000"
+
+#port_use_tls = true
+#port_tls_certfile = ""
+#port_tls_keyfile = ""
+
 # X-Proxy header, defaults to hostname
 xproxy = ""
 
