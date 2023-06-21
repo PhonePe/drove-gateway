@@ -56,7 +56,11 @@ type Config struct {
 	sync.RWMutex
 	Xproxy                  string
 	Realm                   string
+	Address                 string   `json:"-"`
 	Port                    string   `json:"-"`
+	PortWithTLS             bool     `json:"-" toml:"port_use_tls"`
+	TLScertFile             string   `json:"-" toml:"port_tls_certfile"`
+	TLSkeyFile              string   `json:"-" toml:"port_tls_keyfile"`
 	Drove                   []string `json:"-"`
 	EventRefreshIntervalSec int      `json:"-"  toml:"event_refresh_interval_sec"`
 	User                    string   `json:"-"`
@@ -234,17 +238,42 @@ func main() {
 	mux.HandleFunc("/v1/config", nixyConfig)
 	mux.HandleFunc("/v1/health", nixyHealth)
 	mux.Handle("/v1/metrics", promhttp.Handler())
-	s := &http.Server{
-		Addr:    ":" + config.Port,
-		Handler: mux,
+	var s_tls *http.Server
+	var s *http.Server
+	if config.PortWithTLS {
+		cfg := &tls.Config{
+			MinVersion:               tls.VersionTLS12,
+			CurvePreferences:         []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
+			PreferServerCipherSuites: true,
+			CipherSuites: []uint16{
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			},
+		}
+		s_tls = &http.Server{
+			Addr:         config.Address + ":" + config.Port,
+			Handler:      mux,
+			TLSConfig:    cfg,
+			TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler), 0),
+		}
+	} else {
+		s = &http.Server{
+			Addr:    config.Address + ":" + config.Port,
+			Handler: mux,
+		}
 	}
 	health = newHealth()
 	endpointHealth()
 	err = retry.Do(reload)
 	eventWorker()
 	pollEvents()
-	logger.Info("starting nixy on :" + config.Port)
-	err = s.ListenAndServe()
+	logger.Info("Address:" + config.Address)
+    if config.PortWithTLS {
+        logger.Info("starting nixy on https://" + config.Address + ":" + config.Port)
+        err = s_tls.ListenAndServeTLS(config.TLScertFile, config.TLSkeyFile)
+    } else {
+        logger.Info("starting nixy on http://" + config.Address + ":" + config.Port)
+        err = s.ListenAndServe()
+    }
 	if err != nil {
 		log.Fatal(err)
 	}
