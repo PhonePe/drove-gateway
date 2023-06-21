@@ -1,16 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
+	"text/template"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -335,25 +341,25 @@ func fetchApps(jsonapps *DroveApps) error {
 }
 
 func matchingVhost(vHost string, realms []string) bool {
-    if len(realms) == 0 {
-        return true
-    }
-    for _, realm := range realms {
-        if vHost == strings.TrimSpace(realm) {
-            return true
-        }
-    }
-    return false
+	if len(realms) == 0 {
+		return true
+	}
+	for _, realm := range realms {
+		if vHost == strings.TrimSpace(realm) {
+			return true
+		}
+	}
+	return false
 }
 
-func syncApps(jsonapps *DroveApps) bool {
+func syncApps(jsonapps *DroveApps, vhosts *Vhosts) bool {
 	config.Lock()
 	defer config.Unlock()
 	apps := make(map[string]App)
-    var realms = []string{}
-    if(len(config.Realm) > 0) {
-        realms = strings.Split(config.Realm, ",")
-    }
+	var realms = []string{}
+	if len(config.Realm) > 0 {
+		realms = strings.Split(config.Realm, ",")
+	}
 	for _, app := range jsonapps.Apps {
 		var newapp = App{}
 		for _, task := range app.Hosts {
@@ -367,11 +373,52 @@ func syncApps(jsonapps *DroveApps) bool {
 		if len(newapp.Hosts) > 0 {
 			var toAppend = matchingVhost(app.Vhost, realms)
 			if toAppend {
+				vhosts.Vhosts[app.Vhost] = true
 				newapp.ID = app.Vhost
 				newapp.Vhost = app.Vhost
+
+				var groupName = app.Vhost
+				if len(config.RoutingTag) > 0 {
+					if tagValue, ok := app.Tags[config.RoutingTag]; ok {
+						logger.WithFields(logrus.Fields{
+							"tag":   config.RoutingTag,
+							"vhost": newapp.Vhost,
+							"value": tagValue,
+						}).Info("routing tag found")
+						groupName = tagValue
+					} else {
+
+						logger.WithFields(logrus.Fields{
+							"tag":   config.RoutingTag,
+							"vhost": newapp.Vhost,
+						}).Debug("no routing tag found")
+					}
+				} else {
+					logrus.Debug("No routing tag found")
+				}
+
+				var hostGroup = HostGroup{}
+				hostGroup.Tags = app.Tags
+				hostGroup.Hosts = newapp.Hosts
+
 				newapp.Tags = app.Tags
 				if existingApp, ok := apps[app.Vhost]; ok {
+					newapp.Groups = existingApp.Groups
+					if existingGroup, ok := newapp.Groups[groupName]; ok {
+						existingGroup.Hosts = append(newapp.Hosts, existingGroup.Hosts...)
+					} else {
+						newapp.Groups[groupName] = hostGroup
+					}
 					newapp.Hosts = append(newapp.Hosts, existingApp.Hosts...)
+					if newapp.Tags == nil {
+						newapp.Tags = make(map[string]string)
+					}
+					for tn, tv := range existingApp.Tags {
+						newapp.Tags[tn] = tv
+					}
+				} else {
+					newapp.Groups = make(map[string]HostGroup)
+					newapp.Groups[groupName] = hostGroup
 				}
 				apps[app.Vhost] = newapp
 			} else {
@@ -471,6 +518,101 @@ func nginxPlus() error {
 	return nil
 }
 
+func getTmpl() (*template.Template, error) {
+	return template.New(filepath.Base(config.NginxTemplate)).
+		Delims(config.LeftDelimiter, config.RightDelimiter).
+		Funcs(template.FuncMap{
+			"hasPrefix": strings.HasPrefix,
+			"hasSuffix": strings.HasPrefix,
+			"contains":  strings.Contains,
+			"split":     strings.Split,
+			"join":      strings.Join,
+			"trim":      strings.Trim,
+			"replace":   strings.Replace,
+			"tolower":   strings.ToLower,
+			"getenv":    os.Getenv,
+			"datetime":  time.Now}).
+		ParseFiles(config.NginxTemplate)
+}
+
+func checkConf(path string) error {
+	// Always return OK if disabled in config.
+	if config.NginxIgnoreCheck {
+		return nil
+	}
+	// This is to allow arguments as well. Example "docker exec nginx..."
+	args := strings.Fields(config.NginxCmd)
+	head := args[0]
+	args = args[1:]
+	args = append(args, "-c")
+	args = append(args, path)
+	args = append(args, "-t")
+	cmd := exec.Command(head, args...)
+	//cmd := exec.Command(parts..., "-c", path, "-t")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run() // will wait for command to return
+	if err != nil {
+		msg := fmt.Sprint(err) + ": " + stderr.String()
+		errstd := errors.New(msg)
+		return errstd
+	}
+	return nil
+}
+
+func writeConf() error {
+	config.RLock()
+	defer config.RUnlock()
+	template, err := getTmpl()
+	if err != nil {
+		return err
+	}
+
+	logger.WithFields(logrus.Fields{
+		"config: ": config.Apps,
+		"leader":   config.Leader,
+	}).Info("Config: ")
+	parent := filepath.Dir(config.NginxConfig)
+	tmpFile, err := ioutil.TempFile(parent, ".nginx.conf.tmp-")
+	defer tmpFile.Close()
+	lastConfig = tmpFile.Name()
+	err = template.Execute(tmpFile, &config)
+	if err != nil {
+		return err
+	}
+	config.LastUpdates.LastConfigRendered = time.Now()
+	err = checkConf(tmpFile.Name())
+	if err != nil {
+		os.Remove(tmpFile.Name())
+		return err
+	}
+	err = os.Rename(tmpFile.Name(), config.NginxConfig)
+	if err != nil {
+		return err
+	}
+	lastConfig = config.NginxConfig
+	return nil
+}
+
+func reloadNginx() error {
+	// This is to allow arguments as well. Example "docker exec nginx..."
+	args := strings.Fields(config.NginxCmd)
+	head := args[0]
+	args = args[1:]
+	args = append(args, "-s")
+	args = append(args, "reload")
+	cmd := exec.Command(head, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run() // will wait for command to return
+	if err != nil {
+		msg := fmt.Sprint(err) + ": " + stderr.String()
+		errstd := errors.New(msg)
+		return errstd
+	}
+	return nil
+}
+
 func reload() error {
 	return reloadAllApps(false)
 }
@@ -479,6 +621,8 @@ func reloadAllApps(leaderShifted bool) error {
 	logger.Debug("Reloading config")
 	start := time.Now()
 	jsonapps := DroveApps{}
+	vhosts := Vhosts{}
+	vhosts.Vhosts = map[string]bool{}
 	err := fetchApps(&jsonapps)
 	if err != nil || jsonapps.Status != "SUCCESS" {
 		if err != nil {
@@ -490,10 +634,48 @@ func reloadAllApps(leaderShifted bool) error {
 		go countFailedReloads.Inc()
 		return err
 	}
-	equal := syncApps(&jsonapps)
+	equal := syncApps(&jsonapps, &vhosts)
 	if equal && !leaderShifted {
 		logger.Debug("no config changes")
 		return nil
+	}
+	if config.NginxReloadDisabled {
+		logger.Warn("Template reload has been disabled")
+	} else {
+		if !reflect.DeepEqual(vhosts, config.KnownVHosts) {
+			logger.Info("Need to reload config")
+			config.LastUpdates.LastSync = time.Now()
+			err = writeConf()
+			if err != nil {
+				logger.WithFields(logrus.Fields{
+					"error": err.Error(),
+				}).Error("unable to generate nginx config")
+				go statsCount("reload.failed", 1)
+				go countFailedReloads.Inc()
+				return err
+			}
+			config.LastUpdates.LastConfigValid = time.Now()
+			err = reloadNginx()
+			if err != nil {
+				logger.WithFields(logrus.Fields{
+					"error": err.Error(),
+				}).Error("unable to reload nginx")
+				go statsCount("reload.failed", 1)
+				go countFailedReloads.Inc()
+			} else {
+				elapsed := time.Since(start)
+				logger.WithFields(logrus.Fields{
+					"took": elapsed,
+				}).Info("config updated")
+				go statsCount("reload.success", 1)
+				go statsTiming("reload.time", elapsed)
+				go countSuccessfulReloads.Inc()
+				go observeReloadTimeMetric(elapsed)
+				config.LastUpdates.LastNginxReload = time.Now()
+				config.KnownVHosts = vhosts
+			}
+
+		}
 	}
 	config.LastUpdates.LastSync = time.Now()
 	err = nginxPlus()

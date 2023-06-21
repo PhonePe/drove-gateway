@@ -12,7 +12,8 @@ events {
 http {
     server_names_hash_bucket_size  128;
     add_header X-Proxy {{ .Xproxy }} always;
-    access_log off;
+    log_format upstreamlog '[$time_local] $remote_addr - $remote_user - $server_name $host to: $upstream_addr: $request $status upstream_response_time $upstream_response_time msec $msec request_time $request_time';
+    access_log /var/log/nginx/access.log upstreamlog;
     error_log /var/log/nginx/error.log warn;
     server_tokens off;
     client_max_body_size 128m;
@@ -40,7 +41,7 @@ http {
     }
     {{if and .LeaderVHost .Leader.Endpoint}}
     upstream {{.LeaderVHost}} {
-        server {{.Leader.Host}}:{{.Leader.Port}}
+        server {{.Leader.Host}}:{{.Leader.Port}};
     }
     server {
         listen 7000;
@@ -52,27 +53,52 @@ http {
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection $connection_upgrade;
-            proxy_pass http://{{.LeaderVHost}}
+            proxy_pass http://{{.LeaderVHost}};
         }
     }
     {{end}}
     {{- range $id, $app := .Apps}}
-    upstream {{$app.Vhost}} {
-        {{- range $app.Hosts}}
+    {{- range $gid, $hostgrp := .Groups}}
+    upstream {{$gid}} {
+        {{- range $hostgrp.Hosts}}
         server {{ .Host }}:{{ .Port }};
         {{- end}}
     }
+    {{end}}
+
+    map $http_x_request_env $pool {
+        {{- range $gid, $hostgrp := .Groups}}
+        {{if eq $gid $app.Vhost}}
+        default "{{$gid}}";
+        {{else}}
+        {{$gid}} "{{$gid}}";
+        {{end}}
+        {{end}}
+    }
+
+    map $http_x_request_env $upstreamHeader {
+        {{- range $gid, $hostgrp := .Groups}}
+        {{if eq $gid $app.Vhost}}
+        default "";
+        {{else}}
+        {{$gid}} "{{$gid}}";
+        {{end}}
+        {{end}}
+        
+    }
+    
     server {
         listen 7000;
         server_name {{$app.Vhost}};
         location / {
+            proxy_pass http://$pool;
             proxy_set_header HOST $host;
+            proxy_set_header X-REQUEST-ENV $upstreamHeader;
             proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
             proxy_connect_timeout 30;
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection $connection_upgrade;
-            proxy_pass http://{{$app.Vhost}};
         }
     }
     {{- end}}
