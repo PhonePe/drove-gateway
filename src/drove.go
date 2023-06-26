@@ -518,6 +518,20 @@ func nginxPlus() error {
 	return nil
 }
 
+func checkTmpl() error {
+    config.RLock()
+    defer config.RUnlock()
+    t, err := getTmpl()
+    if err != nil {
+        return err
+    }
+    err = t.Execute(ioutil.Discard, &config)
+    if err != nil {
+        return err
+    }
+    return nil
+}
+
 func getTmpl() (*template.Template, error) {
 	return template.New(filepath.Base(config.NginxTemplate)).
 		Delims(config.LeftDelimiter, config.RightDelimiter).
