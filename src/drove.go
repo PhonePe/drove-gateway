@@ -123,7 +123,7 @@ func fetchRecentEvents(client *http.Client, syncPoint *CurrSyncPoint) (*DroveEve
 	}
         logger.WithFields(logrus.Fields{
                 "data": newEventsApiResponse,
-        }).Info("events response")
+        }).Debug("events response")
         if newEventsApiResponse.Status != "SUCCESS" {
                 return nil, errors.New("Events api call failed. Message: " + newEventsApiResponse.Message)
         }
@@ -396,7 +396,7 @@ func syncApps(jsonapps *DroveApps, vhosts *Vhosts) bool {
 						logger.WithFields(logrus.Fields{
 							"tag":   config.RoutingTag,
 							"vhost": newapp.Vhost,
-						}).Info("no routing tag found")
+						}).Debug("no routing tag found")
 					}
 				} else {
 					logrus.Debug("No routing tag found")
