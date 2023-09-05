@@ -38,15 +38,15 @@ type DroveApps struct {
 	Message string `json:"message"`
 }
 
-type DroveEvents struct {
-	Status string `json:"status"`
-	Events []struct {
-		Type     string                 `json:"type"`
-		Id       string                 `json:"id"`
-		Time     int64                  `json:"time"`
-		Metadata map[string]interface{} `json:"metadata"`
-	} `json:"data"`
-	Message string `json:"message"`
+type DroveEventSummary struct {
+        EventsCount  map[string]interface{} `json:"eventsCount"`
+        LastSyncTime int64                  `json:"lastSyncTime"`
+}
+
+type DroveEventsApiResponse struct {
+        Status       string            `json:"status"`
+        EventSummary DroveEventSummary `json:"data"`
+        Message      string            `json:"message"`
 }
 
 type CurrSyncPoint struct {
@@ -82,26 +82,25 @@ func leaderController(endpoint string) *LeaderController {
 	return controllerHost
 }
 
-func fetchRecentEvents(client *http.Client, events *DroveEvents, syncPoint *CurrSyncPoint) error {
+func fetchRecentEvents(client *http.Client, syncPoint *CurrSyncPoint) (*DroveEventSummary, error) {
 	var endpoint string
 	for _, es := range health.Endpoints {
-		if es.Healthy == true {
+		if es.Healthy {
 			endpoint = es.Endpoint
 			break
 		}
 	}
 	if endpoint == "" {
 		err := errors.New("all endpoints are down")
-		return err
+		return nil, err
 	}
 	//if config.apiTimeout != 0 {
 	//    timeout = config.apiTimeout
 	//}
-	currTime := time.Now().UnixMilli()
 	// fetch all apps and tasks with a single request.
-	req, err := http.NewRequest("GET", endpoint+"/apis/v1/cluster/events?lastSyncTime="+fmt.Sprint(syncPoint.LastSyncTime), nil)
+	req, err := http.NewRequest("GET", endpoint+"/apis/v1/cluster/events/summary?lastSyncTime="+fmt.Sprint(syncPoint.LastSyncTime), nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
 	if config.User != "" {
@@ -112,16 +111,25 @@ func fetchRecentEvents(client *http.Client, events *DroveEvents, syncPoint *Curr
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	decoder := json.NewDecoder(resp.Body)
-	err = decoder.Decode(&events)
+	var newEventsApiResponse = DroveEventsApiResponse{}
+	
+	err = decoder.Decode(&newEventsApiResponse)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	syncPoint.LastSyncTime = currTime
-	return nil
+        logger.WithFields(logrus.Fields{
+                "data": newEventsApiResponse,
+        }).Debug("events response")
+        if newEventsApiResponse.Status != "SUCCESS" {
+                return nil, errors.New("Events api call failed. Message: " + newEventsApiResponse.Message)
+        }
+
+        syncPoint.LastSyncTime = newEventsApiResponse.EventSummary.LastSyncTime
+        return &(newEventsApiResponse.EventSummary), nil
 }
 
 func refreshLeaderData() {
@@ -178,38 +186,35 @@ func pollEvents() {
 				syncData.Lock()
 				defer syncData.Unlock()
 				refreshLeaderData()
-				var newEvents = DroveEvents{}
-				err := fetchRecentEvents(client, &newEvents, &syncData)
+				eventSummary, err := fetchRecentEvents(client, &syncData)
 				if err != nil {
 					logger.WithFields(logrus.Fields{
 						"error": err.Error(),
 					}).Error("unable to sync events from drove")
 				} else {
-					if len(newEvents.Events) > 0 {
+					logger.WithFields(logrus.Fields{
+						"events": eventSummary.EventsCount,
+					}).Info("New Events received")
+					if len(eventSummary.EventsCount) > 0 {
 						logger.WithFields(logrus.Fields{
-							"events": newEvents.Events,
-						}).Debug("Events received")
+							"events":    eventSummary.EventsCount,
+							"localTime": time.Now(),
+						}).Info("Events received")
 						reloadNeeded := false
-						for _, event := range newEvents.Events {
-							switch eventType := event.Type; eventType {
-							case "APP_STATE_CHANGE", "INSTANCE_STATE_CHANGE":
-								{
+								if _, ok := eventSummary.EventsCount["APP_STATE_CHANGE"]; ok {
 									reloadNeeded = true
 								}
-							default:
-								{
-									logger.WithFields(logrus.Fields{
-										"type": eventType,
-									}).Info("Event ignored")
+								if _, ok := eventSummary.EventsCount["INSTANCE_STATE_CHANGE"]; ok {
+									reloadNeeded = true
 								}
-							}
-						}
 						if reloadNeeded {
 							select {
 							case eventqueue <- true: // add reload to our queue channel, unless it is full of course.
 							default:
 								logger.Warn("queue is full")
 							}
+						} else {
+							logger.Debug("Irrelevant events ignored")
 						}
 					}
 				}
@@ -369,7 +374,7 @@ func syncApps(jsonapps *DroveApps, vhosts *Vhosts) bool {
 			newtask.PortType = strings.ToLower(task.PortType)
 			newapp.Hosts = append(newapp.Hosts, newtask)
 		}
-		// Lets ignore apps if no tasks are available
+		// Lets ignore apps if no instances are available
 		if len(newapp.Hosts) > 0 {
 			var toAppend = matchingVhost(app.Vhost, realms)
 			if toAppend {
@@ -425,7 +430,7 @@ func syncApps(jsonapps *DroveApps, vhosts *Vhosts) bool {
 				logger.WithFields(logrus.Fields{
 					"realm": config.Realm,
 					"vhost": app.Vhost,
-				}).Debug("Host ignored due to realm mismath")
+				}).Info("Host ignored due to realm mismath")
 			}
 		}
 	}

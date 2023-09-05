@@ -77,6 +77,7 @@ type Config struct {
 	MaxFailsUpstream        *int     `json:"max_fails,omitempty"`
 	FailTimeoutUpstream     string   `json:"fail_timeout,omitempty"`
 	SlowStartUpstream       string   `json:"slow_start,omitempty"`
+	LogLevel		string   `json:"-" toml:"loglevel"`
 
 	apiTimeout  int    `json:"-" toml:"api_timeout"`
 	LeaderVHost string `json:"-" toml:"leader_vhost"`
@@ -133,6 +134,29 @@ var health Health
 var lastConfig string
 var logger = logrus.New()
 
+//set log level
+func setloglevel(){
+	logLevel := logrus.InfoLevel
+	switch config.LogLevel {
+	case "trace":
+		logLevel = logrus.TraceLevel
+	case "debug":
+		logLevel = logrus.DebugLevel
+	case "info":
+		logLevel = logrus.InfoLevel
+	case "warn":
+		logLevel = logrus.WarnLevel
+	case "error":
+		logLevel = logrus.ErrorLevel
+	default:
+		logger.Error("unknown loglevel")
+		logLevel = logrus.InfoLevel
+	}
+
+	logger.SetLevel(logLevel)
+}
+
+
 // Eventqueue with buffer of two, because we dont really need more.
 var eventqueue = make(chan bool, 2)
 
@@ -168,24 +192,31 @@ func nixyReload(w http.ResponseWriter, r *http.Request) {
 }
 
 func nixyHealth(w http.ResponseWriter, r *http.Request) {
-    err := checkTmpl()
-    if err != nil {
-        health.Template.Message = err.Error()
-        health.Template.Healthy = false
-        w.WriteHeader(http.StatusInternalServerError)
-    } else {
-        health.Template.Message = "OK"
-        health.Template.Healthy = true
-    }
-    err = checkConf(lastConfig)
-    if err != nil {
-        health.Config.Message = err.Error()
-        health.Config.Healthy = false
-        w.WriteHeader(http.StatusInternalServerError)
-    } else {
-        health.Config.Message = "OK"
-        health.Config.Healthy = true
-    }
+    if config.NginxReloadDisabled  {
+		health.Template.Message = "Templating disabled"
+		health.Template.Healthy = true
+		health.Config.Message = "Config templating disabled"
+		health.Config.Healthy = true
+	} else {
+	    err := checkTmpl()
+	    if err != nil {
+		health.Template.Message = err.Error()
+		health.Template.Healthy = false
+		w.WriteHeader(http.StatusInternalServerError)
+	    } else {
+		health.Template.Message = "OK"
+		health.Template.Healthy = true
+	    }
+	    err = checkConf(lastConfig)
+	    if err != nil {
+		health.Config.Message = err.Error()
+		health.Config.Healthy = false
+		w.WriteHeader(http.StatusInternalServerError)
+	    } else {
+		health.Config.Message = "OK"
+		health.Config.Healthy = true
+	    }
+	}
 	allBackendsDown := true
 	for _, endpoint := range health.Endpoints {
 		if endpoint.Healthy {
@@ -242,6 +273,7 @@ func main() {
 	if config.Xproxy == "" {
 		config.Xproxy, _ = os.Hostname()
 	}
+	setloglevel()
 	statsd, err = setupStatsd()
 	if err != nil {
 		logger.WithFields(logrus.Fields{
