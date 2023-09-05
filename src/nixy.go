@@ -168,24 +168,31 @@ func nixyReload(w http.ResponseWriter, r *http.Request) {
 }
 
 func nixyHealth(w http.ResponseWriter, r *http.Request) {
-    err := checkTmpl()
-    if err != nil {
-        health.Template.Message = err.Error()
-        health.Template.Healthy = false
-        w.WriteHeader(http.StatusInternalServerError)
-    } else {
-        health.Template.Message = "OK"
-        health.Template.Healthy = true
-    }
-    err = checkConf(lastConfig)
-    if err != nil {
-        health.Config.Message = err.Error()
-        health.Config.Healthy = false
-        w.WriteHeader(http.StatusInternalServerError)
-    } else {
-        health.Config.Message = "OK"
-        health.Config.Healthy = true
-    }
+    if config.NginxReloadDisabled  {
+		health.Template.Message = "Templating disabled"
+		health.Template.Healthy = true
+		health.Config.Message = "Config templating disabled"
+		health.Config.Healthy = true
+	} else {
+	    err := checkTmpl()
+	    if err != nil {
+		health.Template.Message = err.Error()
+		health.Template.Healthy = false
+		w.WriteHeader(http.StatusInternalServerError)
+	    } else {
+		health.Template.Message = "OK"
+		health.Template.Healthy = true
+	    }
+	    err = checkConf(lastConfig)
+	    if err != nil {
+		health.Config.Message = err.Error()
+		health.Config.Healthy = false
+		w.WriteHeader(http.StatusInternalServerError)
+	    } else {
+		health.Config.Message = "OK"
+		health.Config.Healthy = true
+	    }
+	}
 	allBackendsDown := true
 	for _, endpoint := range health.Endpoints {
 		if endpoint.Healthy {
