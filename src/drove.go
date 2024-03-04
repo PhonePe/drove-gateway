@@ -39,14 +39,14 @@ type DroveApps struct {
 }
 
 type DroveEventSummary struct {
-        EventsCount  map[string]interface{} `json:"eventsCount"`
-        LastSyncTime int64                  `json:"lastSyncTime"`
+	EventsCount  map[string]interface{} `json:"eventsCount"`
+	LastSyncTime int64                  `json:"lastSyncTime"`
 }
 
 type DroveEventsApiResponse struct {
-        Status       string            `json:"status"`
-        EventSummary DroveEventSummary `json:"data"`
-        Message      string            `json:"message"`
+	Status       string            `json:"status"`
+	EventSummary DroveEventSummary `json:"data"`
+	Message      string            `json:"message"`
 }
 
 type CurrSyncPoint struct {
@@ -116,20 +116,20 @@ func fetchRecentEvents(client *http.Client, syncPoint *CurrSyncPoint) (*DroveEve
 	defer resp.Body.Close()
 	decoder := json.NewDecoder(resp.Body)
 	var newEventsApiResponse = DroveEventsApiResponse{}
-	
+
 	err = decoder.Decode(&newEventsApiResponse)
 	if err != nil {
 		return nil, err
 	}
-        logger.WithFields(logrus.Fields{
-                "data": newEventsApiResponse,
-        }).Debug("events response")
-        if newEventsApiResponse.Status != "SUCCESS" {
-                return nil, errors.New("Events api call failed. Message: " + newEventsApiResponse.Message)
-        }
+	logger.WithFields(logrus.Fields{
+		"data": newEventsApiResponse,
+	}).Debug("events response")
+	if newEventsApiResponse.Status != "SUCCESS" {
+		return nil, errors.New("Events api call failed. Message: " + newEventsApiResponse.Message)
+	}
 
-        syncPoint.LastSyncTime = newEventsApiResponse.EventSummary.LastSyncTime
-        return &(newEventsApiResponse.EventSummary), nil
+	syncPoint.LastSyncTime = newEventsApiResponse.EventSummary.LastSyncTime
+	return &(newEventsApiResponse.EventSummary), nil
 }
 
 func refreshLeaderData() {
@@ -201,12 +201,12 @@ func pollEvents() {
 							"localTime": time.Now(),
 						}).Info("Events received")
 						reloadNeeded := false
-								if _, ok := eventSummary.EventsCount["APP_STATE_CHANGE"]; ok {
-									reloadNeeded = true
-								}
-								if _, ok := eventSummary.EventsCount["INSTANCE_STATE_CHANGE"]; ok {
-									reloadNeeded = true
-								}
+						if _, ok := eventSummary.EventsCount["APP_STATE_CHANGE"]; ok {
+							reloadNeeded = true
+						}
+						if _, ok := eventSummary.EventsCount["INSTANCE_STATE_CHANGE"]; ok {
+							reloadNeeded = true
+						}
 						if reloadNeeded {
 							select {
 							case eventqueue <- true: // add reload to our queue channel, unless it is full of course.
@@ -486,7 +486,7 @@ func nginxPlus() error {
 
 		client := &http.Client{Transport: tr}
 		c := NginxClient{endpoint, client}
-		newclient, error := NewNginxClient(c.httpClient, c.apiEndpoint)
+		nginxClient, error := NewNginxClient(c.httpClient, c.apiEndpoint)
 
 		upstreamtocheck := app.Vhost
 		var finalformattedServers []UpstreamServer
@@ -496,7 +496,7 @@ func nginxPlus() error {
 			finalformattedServers = append(finalformattedServers, formattedServer)
 		}
 
-		added, deleted, updated, error := newclient.UpdateHTTPServers(upstreamtocheck, finalformattedServers)
+		added, deleted, updated, error := nginxClient.UpdateHTTPServers(upstreamtocheck, finalformattedServers)
 
 		if added != nil {
 			logger.WithFields(logrus.Fields{
@@ -524,17 +524,17 @@ func nginxPlus() error {
 }
 
 func checkTmpl() error {
-    config.RLock()
-    defer config.RUnlock()
-    t, err := getTmpl()
-    if err != nil {
-        return err
-    }
-    err = t.Execute(ioutil.Discard, &config)
-    if err != nil {
-        return err
-    }
-    return nil
+	config.RLock()
+	defer config.RUnlock()
+	t, err := getTmpl()
+	if err != nil {
+		return err
+	}
+	err = t.Execute(ioutil.Discard, &config)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func getTmpl() (*template.Template, error) {
@@ -697,7 +697,11 @@ func reloadAllApps(leaderShifted bool) error {
 		}
 	}
 	config.LastUpdates.LastSync = time.Now()
-	err = nginxPlus()
+	if config.Nginxplusapiaddr == "" {
+		writeConf()
+	} else {
+		err = nginxPlus()
+	}
 	if err != nil {
 		logger.WithFields(logrus.Fields{
 			"error": err.Error(),
