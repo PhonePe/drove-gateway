@@ -23,7 +23,7 @@ access_token = "O-Bearer OLYMPUS_TOKEN"
 
 # Nginx
 #nginxplusapiaddr="127.0.0.1"
-nginxplusapiaddr="stg-nginx301.phonepe.nb6"
+#nginxplusapiaddr="stg-nginx301.phonepe.nb6"
 nginx_config = "./nginx-test.conf"
 nginx_template = "./nginx-header.tmpl"
 nginx_cmd = "nginx" # optionally "openresty" or "docker exec nginx nginx"
