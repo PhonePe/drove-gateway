@@ -56,6 +56,7 @@ type Config struct {
 	sync.RWMutex
 	Xproxy                  string
 	Realm                   string
+	RealmSuffix             string   `json:"-" toml:"realm_suffix"`
 	Address                 string   `json:"-"`
 	Port                    string   `json:"-"`
 	PortWithTLS             bool     `json:"-" toml:"port_use_tls"`
