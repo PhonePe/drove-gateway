@@ -39,14 +39,14 @@ type DroveApps struct {
 }
 
 type DroveEventSummary struct {
-        EventsCount  map[string]interface{} `json:"eventsCount"`
-        LastSyncTime int64                  `json:"lastSyncTime"`
+	EventsCount  map[string]interface{} `json:"eventsCount"`
+	LastSyncTime int64                  `json:"lastSyncTime"`
 }
 
 type DroveEventsApiResponse struct {
-        Status       string            `json:"status"`
-        EventSummary DroveEventSummary `json:"data"`
-        Message      string            `json:"message"`
+	Status       string            `json:"status"`
+	EventSummary DroveEventSummary `json:"data"`
+	Message      string            `json:"message"`
 }
 
 type CurrSyncPoint struct {
@@ -116,20 +116,20 @@ func fetchRecentEvents(client *http.Client, syncPoint *CurrSyncPoint) (*DroveEve
 	defer resp.Body.Close()
 	decoder := json.NewDecoder(resp.Body)
 	var newEventsApiResponse = DroveEventsApiResponse{}
-	
+
 	err = decoder.Decode(&newEventsApiResponse)
 	if err != nil {
 		return nil, err
 	}
-        logger.WithFields(logrus.Fields{
-                "data": newEventsApiResponse,
-        }).Debug("events response")
-        if newEventsApiResponse.Status != "SUCCESS" {
-                return nil, errors.New("Events api call failed. Message: " + newEventsApiResponse.Message)
-        }
+	logger.WithFields(logrus.Fields{
+		"data": newEventsApiResponse,
+	}).Debug("events response")
+	if newEventsApiResponse.Status != "SUCCESS" {
+		return nil, errors.New("Events api call failed. Message: " + newEventsApiResponse.Message)
+	}
 
-        syncPoint.LastSyncTime = newEventsApiResponse.EventSummary.LastSyncTime
-        return &(newEventsApiResponse.EventSummary), nil
+	syncPoint.LastSyncTime = newEventsApiResponse.EventSummary.LastSyncTime
+	return &(newEventsApiResponse.EventSummary), nil
 }
 
 func refreshLeaderData() {
@@ -201,12 +201,12 @@ func pollEvents() {
 							"localTime": time.Now(),
 						}).Info("Events received")
 						reloadNeeded := false
-								if _, ok := eventSummary.EventsCount["APP_STATE_CHANGE"]; ok {
-									reloadNeeded = true
-								}
-								if _, ok := eventSummary.EventsCount["INSTANCE_STATE_CHANGE"]; ok {
-									reloadNeeded = true
-								}
+						if _, ok := eventSummary.EventsCount["APP_STATE_CHANGE"]; ok {
+							reloadNeeded = true
+						}
+						if _, ok := eventSummary.EventsCount["INSTANCE_STATE_CHANGE"]; ok {
+							reloadNeeded = true
+						}
 						if reloadNeeded {
 							select {
 							case eventqueue <- true: // add reload to our queue channel, unless it is full of course.
@@ -376,7 +376,7 @@ func syncApps(jsonapps *DroveApps, vhosts *Vhosts) bool {
 		}
 		// Lets ignore apps if no instances are available
 		if len(newapp.Hosts) > 0 {
-			var toAppend = matchingVhost(app.Vhost, realms)
+			var toAppend = matchingVhost(app.Vhost, realms) || (len(config.RealmSuffix) > 0 && strings.HasSuffix(app.Vhost, config.RealmSuffix))
 			if toAppend {
 				vhosts.Vhosts[app.Vhost] = true
 				newapp.ID = app.Vhost
@@ -430,7 +430,7 @@ func syncApps(jsonapps *DroveApps, vhosts *Vhosts) bool {
 				logger.WithFields(logrus.Fields{
 					"realm": config.Realm,
 					"vhost": app.Vhost,
-				}).Info("Host ignored due to realm mismath")
+				}).Warn("Host ignored due to realm mismath")
 			}
 		}
 	}
@@ -441,6 +441,40 @@ func syncApps(jsonapps *DroveApps, vhosts *Vhosts) bool {
 	}
 	config.Apps = apps
 	return false
+}
+
+func writeConf() error {
+	config.RLock()
+	defer config.RUnlock()
+	template, err := getTmpl()
+	if err != nil {
+		return err
+	}
+
+	logger.WithFields(logrus.Fields{
+		"config: ": config.Apps,
+		"leader":   config.Leader,
+	}).Info("Config: ")
+	parent := filepath.Dir(config.NginxConfig)
+	tmpFile, err := ioutil.TempFile(parent, ".nginx.conf.tmp-")
+	defer tmpFile.Close()
+	lastConfig = tmpFile.Name()
+	err = template.Execute(tmpFile, &config)
+	if err != nil {
+		return err
+	}
+	config.LastUpdates.LastConfigRendered = time.Now()
+	err = checkConf(tmpFile.Name())
+	if err != nil {
+		os.Remove(tmpFile.Name())
+		return err
+	}
+	err = os.Rename(tmpFile.Name(), config.NginxConfig)
+	if err != nil {
+		return err
+	}
+	lastConfig = config.NginxConfig
+	return nil
 }
 
 func nginxPlus() error {
@@ -486,7 +520,7 @@ func nginxPlus() error {
 
 		client := &http.Client{Transport: tr}
 		c := NginxClient{endpoint, client}
-		newclient, error := NewNginxClient(c.httpClient, c.apiEndpoint)
+		nginxClient, error := NewNginxClient(c.httpClient, c.apiEndpoint)
 
 		upstreamtocheck := app.Vhost
 		var finalformattedServers []UpstreamServer
@@ -496,7 +530,7 @@ func nginxPlus() error {
 			finalformattedServers = append(finalformattedServers, formattedServer)
 		}
 
-		added, deleted, updated, error := newclient.UpdateHTTPServers(upstreamtocheck, finalformattedServers)
+		added, deleted, updated, error := nginxClient.UpdateHTTPServers(upstreamtocheck, finalformattedServers)
 
 		if added != nil {
 			logger.WithFields(logrus.Fields{
@@ -524,17 +558,17 @@ func nginxPlus() error {
 }
 
 func checkTmpl() error {
-    config.RLock()
-    defer config.RUnlock()
-    t, err := getTmpl()
-    if err != nil {
-        return err
-    }
-    err = t.Execute(ioutil.Discard, &config)
-    if err != nil {
-        return err
-    }
-    return nil
+	config.RLock()
+	defer config.RUnlock()
+	t, err := getTmpl()
+	if err != nil {
+		return err
+	}
+	err = t.Execute(ioutil.Discard, &config)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func getTmpl() (*template.Template, error) {
@@ -579,40 +613,6 @@ func checkConf(path string) error {
 	return nil
 }
 
-func writeConf() error {
-	config.RLock()
-	defer config.RUnlock()
-	template, err := getTmpl()
-	if err != nil {
-		return err
-	}
-
-	logger.WithFields(logrus.Fields{
-		"config: ": config.Apps,
-		"leader":   config.Leader,
-	}).Info("Config: ")
-	parent := filepath.Dir(config.NginxConfig)
-	tmpFile, err := ioutil.TempFile(parent, ".nginx.conf.tmp-")
-	defer tmpFile.Close()
-	lastConfig = tmpFile.Name()
-	err = template.Execute(tmpFile, &config)
-	if err != nil {
-		return err
-	}
-	config.LastUpdates.LastConfigRendered = time.Now()
-	err = checkConf(tmpFile.Name())
-	if err != nil {
-		os.Remove(tmpFile.Name())
-		return err
-	}
-	err = os.Rename(tmpFile.Name(), config.NginxConfig)
-	if err != nil {
-		return err
-	}
-	lastConfig = config.NginxConfig
-	return nil
-}
-
 func reloadNginx() error {
 	// This is to allow arguments as well. Example "docker exec nginx..."
 	args := strings.Fields(config.NginxCmd)
@@ -634,6 +634,41 @@ func reloadNginx() error {
 
 func reload() error {
 	return reloadAllApps(false)
+}
+
+func updateAndReloadConfig(vhosts *Vhosts) error {
+	start := time.Now()
+	config.LastUpdates.LastSync = time.Now()
+	err := writeConf()
+	if err != nil {
+		logger.WithFields(logrus.Fields{
+			"error": err.Error(),
+		}).Error("unable to generate nginx config")
+		go statsCount("reload.failed", 1)
+		go countFailedReloads.Inc()
+		return err
+	}
+	config.LastUpdates.LastConfigValid = time.Now()
+	err = reloadNginx()
+	if err != nil {
+		logger.WithFields(logrus.Fields{
+			"error": err.Error(),
+		}).Error("unable to reload nginx")
+		go statsCount("reload.failed", 1)
+		go countFailedReloads.Inc()
+	} else {
+		elapsed := time.Since(start)
+		logger.WithFields(logrus.Fields{
+			"took": elapsed,
+		}).Info("config updated")
+		go statsCount("reload.success", 1)
+		go statsTiming("reload.time", elapsed)
+		go countSuccessfulReloads.Inc()
+		go observeReloadTimeMetric(elapsed)
+		config.LastUpdates.LastNginxReload = time.Now()
+		config.KnownVHosts = *vhosts
+	}
+	return nil
 }
 
 func reloadAllApps(leaderShifted bool) error {
@@ -658,46 +693,39 @@ func reloadAllApps(leaderShifted bool) error {
 		logger.Debug("no config changes")
 		return nil
 	}
-	if config.NginxReloadDisabled {
-		logger.Warn("Template reload has been disabled")
-	} else {
-		if !reflect.DeepEqual(vhosts, config.KnownVHosts) {
-			logger.Info("Need to reload config")
-			config.LastUpdates.LastSync = time.Now()
-			err = writeConf()
-			if err != nil {
-				logger.WithFields(logrus.Fields{
-					"error": err.Error(),
-				}).Error("unable to generate nginx config")
-				go statsCount("reload.failed", 1)
-				go countFailedReloads.Inc()
-				return err
-			}
-			config.LastUpdates.LastConfigValid = time.Now()
-			err = reloadNginx()
-			if err != nil {
-				logger.WithFields(logrus.Fields{
-					"error": err.Error(),
-				}).Error("unable to reload nginx")
-				go statsCount("reload.failed", 1)
-				go countFailedReloads.Inc()
-			} else {
-				elapsed := time.Since(start)
-				logger.WithFields(logrus.Fields{
-					"took": elapsed,
-				}).Info("config updated")
-				go statsCount("reload.success", 1)
-				go statsTiming("reload.time", elapsed)
-				go countSuccessfulReloads.Inc()
-				go observeReloadTimeMetric(elapsed)
-				config.LastUpdates.LastNginxReload = time.Now()
-				config.KnownVHosts = vhosts
-			}
 
-		}
-	}
 	config.LastUpdates.LastSync = time.Now()
-	err = nginxPlus()
+	if len(config.Nginxplusapiaddr) == 0 || config.Nginxplusapiaddr == "" {
+		//Nginx plus is disabled
+		err = updateAndReloadConfig(&vhosts)
+		if err != nil {
+			logger.WithFields(logrus.Fields{
+				"error": err.Error(),
+			}).Error("unable to reload nginx config")
+			go statsCount("reload.failed", 1)
+			go countFailedReloads.Inc()
+			return err
+		}
+	} else {
+		//Nginx plus is enabled
+		if config.NginxReloadDisabled {
+			logger.Warn("Template reload has been disabled")
+		} else {
+			if !reflect.DeepEqual(vhosts, config.KnownVHosts) {
+				logger.Info("Need to reload config")
+				err = updateAndReloadConfig(&vhosts)
+				if err != nil {
+					logger.WithFields(logrus.Fields{
+						"error": err.Error(),
+					}).Error("unable to update and reload nginx config. NPlus api calls will be skipped.")
+					return err
+				}
+			} else {
+				logger.Debug("No changes detected in vhosts. No config update is necessary. Upstream updates will happen via nplus apis")
+			}
+		}
+		err = nginxPlus()
+	}
 	if err != nil {
 		logger.WithFields(logrus.Fields{
 			"error": err.Error(),
@@ -710,10 +738,5 @@ func reloadAllApps(leaderShifted bool) error {
 	logger.WithFields(logrus.Fields{
 		"took": elapsed,
 	}).Info("config updated")
-	go statsCount("reload.success", 1)
-	go statsTiming("reload.time", elapsed)
-	go countSuccessfulReloads.Inc()
-	go observeReloadTimeMetric(elapsed)
-	config.LastUpdates.LastNginxReload = time.Now()
 	return nil
 }

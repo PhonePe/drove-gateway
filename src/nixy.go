@@ -56,6 +56,7 @@ type Config struct {
 	sync.RWMutex
 	Xproxy                  string
 	Realm                   string
+	RealmSuffix             string   `json:"-" toml:"realm_suffix"`
 	Address                 string   `json:"-"`
 	Port                    string   `json:"-"`
 	PortWithTLS             bool     `json:"-" toml:"port_use_tls"`
@@ -77,7 +78,7 @@ type Config struct {
 	MaxFailsUpstream        *int     `json:"max_fails,omitempty"`
 	FailTimeoutUpstream     string   `json:"fail_timeout,omitempty"`
 	SlowStartUpstream       string   `json:"slow_start,omitempty"`
-	LogLevel		string   `json:"-" toml:"loglevel"`
+	LogLevel                string   `json:"-" toml:"loglevel"`
 
 	apiTimeout  int    `json:"-" toml:"api_timeout"`
 	LeaderVHost string `json:"-" toml:"leader_vhost"`
@@ -135,7 +136,7 @@ var lastConfig string
 var logger = logrus.New()
 
 //set log level
-func setloglevel(){
+func setloglevel() {
 	logLevel := logrus.InfoLevel
 	switch config.LogLevel {
 	case "trace":
@@ -155,7 +156,6 @@ func setloglevel(){
 
 	logger.SetLevel(logLevel)
 }
-
 
 // Eventqueue with buffer of two, because we dont really need more.
 var eventqueue = make(chan bool, 2)
@@ -192,30 +192,30 @@ func nixyReload(w http.ResponseWriter, r *http.Request) {
 }
 
 func nixyHealth(w http.ResponseWriter, r *http.Request) {
-    if config.NginxReloadDisabled  {
+	if config.NginxReloadDisabled {
 		health.Template.Message = "Templating disabled"
 		health.Template.Healthy = true
 		health.Config.Message = "Config templating disabled"
 		health.Config.Healthy = true
 	} else {
-	    err := checkTmpl()
-	    if err != nil {
-		health.Template.Message = err.Error()
-		health.Template.Healthy = false
-		w.WriteHeader(http.StatusInternalServerError)
-	    } else {
-		health.Template.Message = "OK"
-		health.Template.Healthy = true
-	    }
-	    err = checkConf(lastConfig)
-	    if err != nil {
-		health.Config.Message = err.Error()
-		health.Config.Healthy = false
-		w.WriteHeader(http.StatusInternalServerError)
-	    } else {
-		health.Config.Message = "OK"
-		health.Config.Healthy = true
-	    }
+		err := checkTmpl()
+		if err != nil {
+			health.Template.Message = err.Error()
+			health.Template.Healthy = false
+			w.WriteHeader(http.StatusInternalServerError)
+		} else {
+			health.Template.Message = "OK"
+			health.Template.Healthy = true
+		}
+		err = checkConf(lastConfig)
+		if err != nil {
+			health.Config.Message = err.Error()
+			health.Config.Healthy = false
+			w.WriteHeader(http.StatusInternalServerError)
+		} else {
+			health.Config.Message = "OK"
+			health.Config.Healthy = true
+		}
 	}
 	allBackendsDown := true
 	for _, endpoint := range health.Endpoints {
@@ -317,13 +317,13 @@ func main() {
 	eventWorker()
 	pollEvents()
 	logger.Info("Address:" + config.Address)
-    if config.PortWithTLS {
-        logger.Info("starting nixy on https://" + config.Address + ":" + config.Port)
-        err = s_tls.ListenAndServeTLS(config.TLScertFile, config.TLSkeyFile)
-    } else {
-        logger.Info("starting nixy on http://" + config.Address + ":" + config.Port)
-        err = s.ListenAndServe()
-    }
+	if config.PortWithTLS {
+		logger.Info("starting nixy on https://" + config.Address + ":" + config.Port)
+		err = s_tls.ListenAndServeTLS(config.TLScertFile, config.TLSkeyFile)
+	} else {
+		logger.Info("starting nixy on http://" + config.Address + ":" + config.Port)
+		err = s.ListenAndServe()
+	}
 	if err != nil {
 		log.Fatal(err)
 	}
