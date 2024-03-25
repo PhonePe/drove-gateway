@@ -208,3 +208,4 @@ journalctl -u nixy -f
 ## Building nixy
 
 There is a script inside `scripts` directory for building the binary.
+
