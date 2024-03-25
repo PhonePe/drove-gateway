@@ -1,128 +1,210 @@
-# nixy
-Nixy is a daemon that automatically configures Nginx for web services deployed on Apache Mesos and Marathon.
-Github: https://github.com/martensson/nixy
+# Nixy for Drove
+
+Nixy is a daemon that automatically configures Nginx for web service containers deployed on the Drove container orchestrator.
+
+It is based off the original Nixy codebase which used to do the same for web services deployed on Apache Mesos and Marathon. Original Nixy Github: https://github.com/martensson/nixy
 
 Features provided by Nixy Open Source
-- Real-time updates via Marathon's event stream (Marathon v0.9.0), so no need for callbacks.
-- Automatic service discovery of all running tasks inside Mesos/Marathon, including their health status.
+- Real-time updates via Drove's event stream to trigger changes
+- Supports full NGinx conf reloads on NGinx OSS as well as only upstream updates using NGinx plus apis
+- Automatic service discovery of all apps inside Drove, including their metadata tags as well as health status
+- For multi-controller drove setups, will track the leader automatically
+- Vhost configuration for leaders
 - Single binary with no other dependencies (except Nginx/Openresty)
+- Whitelisting of vhost configuration based on suffix and well as host-names
 
-Features added and planned for future releases
-- Nginx Plus API integration to update the upstreams
-- Configurable whitelisting based on the traefik.backend label
+## Usage
+Nixy needs TOML a configuration file for managing it's configuration. NGinx configuration is generated from a template file.
 
-Features planned for future releases
-- Debian package for easy deployment
-- Concurrency support when updating nginx upstreams
-- Check the cache only for whitelisted marathon applications, right now we make GET calls using nginx plus api even for marathon apps which are not whitelisted.
+### Create the TOML config for Nixy
 
-Bugs:
-ERRO[0383] unable to sync from marathon                  error="context deadline exceeded (Client.Timeout or context cancellation while reading body)"
+Sample config file `/etc/nixy/nixy.toml`:
+
+```toml
+# Nixy listening port
+address = "127.0.0.1"
+port = "6000"
 
 
-Query the upstreams using nginx plus API
+# Drove Options
 
-[root@stg-nginx300 ankit.timbadia]# curl -q  -X GET  "http://10.57.11.218/api/6/http/upstreams/nixy-demo/servers" -H "accept: application/json" | jq
-[
-  {
-    "id": 0,
-    "server": "10.57.8.94:31326",
-    "weight": 1,
-    "max_conns": 0,
-    "max_fails": 1,
-    "fail_timeout": "10s",
-    "slow_start": "0s",
-    "route": "",
-    "backup": false,
-    "down": false
-  },
-  {
-    "id": 3,
-    "server": "10.57.8.65:31699",
-    "weight": 1,
-    "max_conns": 0,
-    "max_fails": 1,
-    "fail_timeout": "10s",
-    "slow_start": "0s",
-    "route": "",
-    "backup": false,
-    "down": false
-  }
-]
+# List of Drove controllers. Add all controller nodes here. Nixy will automatically determine and track th current leader. Auto detection is disabled if a single endpoint is specified.
+drove = [
+  "http://controller1.mydomain:10000",
+   "http://controller1.mydomain:10000"
+   ]
 
-State files needs to be created before adding new upstreams in the /etc/nginx/sites-available/upstreams.conf configuration
-[root@stg-nginx300 ankit.timbadia]# cat /var/lib/nginx/state/nixy-demo.conf
-server 10.57.8.94:31326;
-server 10.57.8.65:31699;
+# Helps create a vhost entry that tracks the leader on the cluster. Use this to expose the Drove endpoint to users. The value for this will be available to the template engine as the LeaderVHost variable
+leader_vhost = "drove-staging.yourdomain-internal.net"
 
-nixy-demo upstream defined in the upstream.conf 
-[root@stg-nginx300 ankit.timbadia]# cat /etc/nginx/sites-available/upstreams.conf
-upstream nixy-demo {
-        resolver 127.0.0.1 ipv6=off;
-        zone nixy-demo 64k;
-        state /var/lib/nginx/state/nixy-demo.conf;
-        keepalive 50 ;
+# If some special routing behaviour needs to be implemented in the template based on some tag metadata of the dpeloyed apps, set the routing_tag option to set the tag name to be used. The actual value is derived from app instances and exposed to the template engine as the variable: RoutingTag
+routing_tag = "externally_exposed"
+
+# Nixy works on event polling on controller. This is the polling interval. Unless cluster is really busy, this strikes a good balance. Especially if number of NGinx nodes is high. Default is 2 seconds.
+event_refresh_interval_sec = 5
+
+# The following two optional params can be used to set basic auth creds if the Drove cluster is basic auth enabled. Leave empty if no basic auth is required.
+user = ""
+pass = ""
+
+# If cluster has some custom header based auth, the collowing can be used. The contents on thsi parameter are passed verbatim to the Authorization HTTP header. Leave empty if no token auth
+access_token = ""
+
+# By default nixy will expose all vhost declared in the spec for all drove apps on a cluster. If specific vhosts need to be exposed, set the realms parameter to a comma separated list of realms. Optional.
+realm = "api.yourdomain.com,support.yourdomain.com"
+
+# Beside perfect vhost matching, Nixy supports suffix based matches as well. A single suffix is supported. Optional.
+realm_suffix = "-external.yourdomain.com"
+
+# Nginx details
+
+# Path to NGinx config
+nginx_config = "/etc/nginx/nginx.conf"
+
+# Path to the template file, based on which the template will be generated
+nginx_template = "/etc/nixy/nginx.tmpl"
+
+# NGinx command to use to reload the config
+nginx_cmd = "nginx" # optionally "openresty" or "docker exec nginx nginx"
+
+# Ignore calling NGinx command to test the config. Set this to false or delete this line on production. Default: false
+nginx_ignore_check = true
+
+# NGinx plus specific options
+# If using NGinx plus, set the endpoint to the local server here. If left empty, NGinx plus api based vhost update will be disabled
+nginxplusapiaddr="127.0.0.1"
+
+# If specific vhosts are exposed, auto-discovery and updation of config (and NGinx reloads) might not be desired as it will cause connection drops. Set the following parameter to true to disable reloads. Nixy will only update upstreams using the nplus APIs
+nginx_reload_disabled=true
+
+# Connection parameters for NGinx plus
+maxfailsupstream = 0
+failtimeoutupstream = "1s"
+slowstartupstream = "0s"
+
+# Statsd settings
+#[statsd]
+#addr = "10.57.8.171:8125" # optional for statistics
+#namespace = "nixy.my_mesos_cluster"
+#sample_rate = 100
+
+```
+
+## Create template for NGinx
+
+Create a NGinx template with the following config in `/etc/nixy/nixy.tmpl`
+
+```nginx
+# Generated by nixy {{datetime}}
+
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+
+events {
+    use epoll;
+    worker_connections 2048;
+    multi_accept on;
 }
-
-Dummy nginx virtual host configuration 
-server {
-        listen 443 ssl;
-
-        ssl_certificate /etc/ssl/certs/phonepe.crt;
-        ssl_certificate_key /etc/ssl/certs/phonepe.key;
-        ssl_session_cache shared:SSL:20m;
-        ssl_session_timeout 5m;
-
-        ssl_prefer_server_ciphers on;
-
-        #ssl_ciphers ECDH+AESGCM:ECDH+AES256:ECDH+AES128:DH+3DES:!ADH:!AECDH:!MD5;
-        ssl_ciphers ECDH+AESGCM:ECDH+AES256:ECDH+AES128:!ADH:!AECDH:!MD5:TLS13-CHACHA20-POLY1305-SHA256:TLS13-AES-256-GCM-SHA384:TLS13-AES-128-GCM-SHA256;
-
-
-        ssl_dhparam /etc/ssl/certs/dhparam.pem;
-        #ssl_protocols TLSv1.2;
-        ssl_protocols TLSv1.2 TLSv1.3;
-
-        ssl_stapling on;
-        ssl_stapling_verify on;
-        resolver 127.0.0.1 ipv6=off;
-
-server_name nixy.phonepe.com;
-
-
-	location / {
-           proxy_pass http://nixy-demo;
-           proxy_http_version 1.1;
-	       proxy_set_header Connection "";
-           access_log  /var/log/nginx/access.log;
+http {
+    server_names_hash_bucket_size  128;
+    add_header X-Proxy {{ .Xproxy }} always;
+    access_log off;
+    error_log /var/log/nginx/error.log warn;
+    server_tokens off;
+    client_max_body_size 128m;
+    proxy_buffer_size 128k;
+    proxy_buffers 4 256k;
+    proxy_busy_buffers_size 256k;
+    proxy_redirect off;
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        ''      close;
+    }
+    # time out settings
+    proxy_send_timeout 120;
+    proxy_read_timeout 120;
+    send_timeout 120;
+    keepalive_timeout 10;
+    
+    server {
+        listen       7000 default_server;
+        server_name  _;
+        # Everything is a 503
+        location / {
+            return 503;
         }
-
+    }
+    {{if and .LeaderVHost .Leader.Endpoint}}
+    upstream {{.LeaderVHost}} {
+        server {{.Leader.Host}}:{{.Leader.Port}}
+    }
+    server {
+        listen 7000;
+        server_name {{.LeaderVHost}};
+        location / {
+            proxy_set_header HOST {{.Leader.Host}};
+            proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+            proxy_connect_timeout 30;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_pass http://{{.LeaderVHost}}
+        }
+    }
+    {{end}}
+    {{- range $id, $app := .Apps}}
+    upstream {{$app.Vhost}} {
+        {{- range $app.Hosts}}
+        server {{ .Host }}:{{ .Port }};
+        {{- end}}
+    }
+    server {
+        listen 7000;
+        server_name {{$app.Vhost}};
+        location / {
+            proxy_set_header HOST $host;
+            proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
+            proxy_connect_timeout 30;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_pass http://{{$app.Vhost}};
+        }
+    }
+    {{- end}}
 }
+```
 
+The above template will do the following:
+- Set NGinx port to 7000
+- Set up a Vhost `drove-staging.yourdomain-internal.net` that will get auto-updated with the current leader of the Drove cluster
+- Setup automatically updated vhosts for all apps on the cluster or those that match the criterion specificed in the `realm` or `realm_suffix` config parameters
 
-Nixy SystemD service configuration
+> Leader vhost is not updated if NGinx plus is enabled and `nginx_reload_disabled` is set to true.
 
-cat /etc/systemd/system/nixy.service
-[root@stg-nginx300 system]# cat nixy.service
-[Unit]
-Description=nixy - nginx marathon/mesos proxy
-After=network.target
-StartLimitIntervalSec=0
-[Service]
-LimitNOFILE=65000
-LimitNPROC=65000
-Type=simple
-Restart=always
-RestartSec=1
-User=root
-ExecStart=/usr/bin/nixy -f /etc/nixy/nixy.toml 2>&1 | logger -t nixy
+For more complicated templates, please check `examples` directory
 
-[Install]
-WantedBy=multi-user.target
+## Nixy SystemD Service configuration
 
+Copy the nixy.service file from `support` directory to `/etc/systemd/system/`.
+```sh
+cp support/nixy.service /etc/systemd/system/nixy.service
+```
 
-Start / Stop nixy service
-service nixy stop / service nixy start
+Manage the service suing `service` commands.
 
-Logs
+```sh
+service nixy start
+service nixy stop
+```
+
+### Checking Logs
+You can check logs using:
+```sh
 journalctl -u nixy -f
+```
+
+## Building nixy
+
+There is a script inside `scripts` directory for building the binary.
