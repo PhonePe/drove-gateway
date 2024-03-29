@@ -1,0 +1,26 @@
+# Nixy listening port
+address = "0.0.0.0"
+port = "6000"
+
+
+# X-Proxy header, defaults to hostname
+xproxy = ""
+
+# Drove API
+drove = [${DROVE_CONTROLLER_LIST}] # add all HA cluster nodes in priority order.
+event_refresh_interval_sec = 5
+user = "${DROVE_USERNAME}" # leave empty if no auth is required.
+pass = "${DROVE_PASSWORD}"
+
+# Nginx
+nginx_config = "/etc/nginx/nginx.conf"
+nginx_template = "${TEMPLATE_PATH}"
+nginx_cmd = "nginx"
+nginx_ignore_check = false
+
+maxfailsupstream = 0
+failtimeoutupstream = "1s"
+slowstartupstream = "0s"
+
+leader_vhost = "${NGINX_DROVE_VHOST}"
+

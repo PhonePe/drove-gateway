@@ -135,7 +135,7 @@ func fetchRecentEvents(client *http.Client, syncPoint *CurrSyncPoint) (*DroveEve
 func refreshLeaderData() {
 	var endpoint string
 	for _, es := range health.Endpoints {
-		if es.Healthy == true {
+		if es.Healthy {
 			endpoint = es.Endpoint
 			break
 		}
@@ -218,7 +218,6 @@ func pollEvents() {
 						}
 					}
 				}
-				return
 			}()
 		}
 	}()
@@ -301,7 +300,7 @@ func fetchApps(jsonapps *DroveApps) error {
 	var endpoint string
 	var timeout int = 5
 	for _, es := range health.Endpoints {
-		if es.Healthy == true {
+		if es.Healthy {
 			endpoint = es.Endpoint
 			break
 		}
@@ -457,6 +456,9 @@ func writeConf() error {
 	}).Info("Config: ")
 	parent := filepath.Dir(config.NginxConfig)
 	tmpFile, err := ioutil.TempFile(parent, ".nginx.conf.tmp-")
+	if err != nil {
+		return err
+	}
 	defer tmpFile.Close()
 	lastConfig = tmpFile.Name()
 	err = template.Execute(tmpFile, &config)
@@ -466,7 +468,7 @@ func writeConf() error {
 	config.LastUpdates.LastConfigRendered = time.Now()
 	err = checkConf(tmpFile.Name())
 	if err != nil {
-		os.Remove(tmpFile.Name())
+		//os.Remove(tmpFile.Name())
 		return err
 	}
 	err = os.Rename(tmpFile.Name(), config.NginxConfig)
@@ -521,7 +523,12 @@ func nginxPlus() error {
 		client := &http.Client{Transport: tr}
 		c := NginxClient{endpoint, client}
 		nginxClient, error := NewNginxClient(c.httpClient, c.apiEndpoint)
-
+		if error != nil {
+			logger.WithFields(logrus.Fields{
+				"error": error,
+			}).Error("unable to make call to nginx plus")
+			return error
+		}
 		upstreamtocheck := app.Vhost
 		var finalformattedServers []UpstreamServer
 
