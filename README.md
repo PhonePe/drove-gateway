@@ -16,7 +16,33 @@ Features provided by Nixy Open Source
 ## Usage
 Nixy needs TOML a configuration file for managing it's configuration. NGinx configuration is generated from a template file.
 
-### Create the TOML config for Nixy
+### Running with docker
+
+`nixy` is provided as a container. You can run the container as follows:
+
+```shell
+docker run --name nx --rm \
+    -e DROVE_CONTROLLERS="http://controller1:4000,http://controller2:4000" \
+    -e TZ=Asia/Calcutta \
+    -e DEBUG=1 \
+    -e NGINX_DROVE_VHOST=drove.local \
+    --network host \
+    quay.io/santanu_sinha/drove-nixy:latest
+```
+#### Tuning behaviour using environment variables
+The following environment variables can be used to tune the behaviour of the container.
+
+| Variable Name     |                           Required                          | Description                                                                                                                    |
+|-------------------|:-----------------------------------------------------------:|--------------------------------------------------------------------------------------------------------------------------------|
+| DROVE_CONTROLLERS |       **Yes.** List of controllers separated by comma.      | List of individual controller endpoints. Put all controller endpoints here. <br> Nixy will determine the leader automatically. |
+| NGINX_DROVE_VHOST | **Optional** The vhost for drove endpoint to be configured. | If this is set, nixy will expose the leader controller over the provided vhost.                                                |
+| DROVE_USERNAME    |           **Optional.** Set to `guest` by default.          | Username to login to drove. Read-only user is sufficient.                                                                      |
+| DROVE_PASSWORD    |           **Optional.** Set to `guest` by default.          | Password to drove cluster for the above username.                                                                              |
+### Running as service
+
+Go through the following steps to run `nixy` as a service.
+
+#### Create the TOML config for Nixy
 
 Sample config file `/etc/nixy/nixy.toml`:
 
@@ -90,7 +116,7 @@ slowstartupstream = "0s"
 
 ```
 
-## Create template for NGinx
+### Create template for NGinx
 
 Create a NGinx template with the following config in `/etc/nixy/nixy.tmpl`
 
@@ -185,27 +211,27 @@ The above template will do the following:
 
 For more complicated templates, please check `examples` directory
 
-## Nixy SystemD Service configuration
+### Nixy SystemD Service configuration
 
 Copy the nixy.service file from `support` directory to `/etc/systemd/system/`.
-```sh
+```shell
 cp support/nixy.service /etc/systemd/system/nixy.service
 ```
 
 Manage the service suing `service` commands.
 
-```sh
+```shell
 service nixy start
 service nixy stop
 ```
 
-### Checking Logs
+#### Checking Logs
 You can check logs using:
-```sh
+```shell
 journalctl -u nixy -f
 ```
 
 ## Building nixy
 
-There is a script inside `scripts` directory for building the binary.
+There is a script inside `scripts` directory for building the binary. Please run `bash ./gobuild.sh` to build the binary and the docker.
 

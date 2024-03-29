@@ -6,7 +6,7 @@ EXPOSE 6000
 COPY nixy nixy
 
 USER root
-RUN apt-get update && apt-get install -y nginx gettext
+RUN apt-get update && apt-get -y upgrade && apt-get install -y nginx gettext tzdata
 
 COPY docker-nixy.toml.subst .
 # COPY docker-nginx.tmpl.subst .

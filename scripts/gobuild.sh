@@ -14,5 +14,5 @@ echo "Build version details:"
 
 pushd ../docker
 cp ../scripts/nixy .
-docker build -t quay.io/santanu_sinha/drove-nixy:${VERSION} .
+docker build -t quay.io/santanu_sinha/drove-nixy:${VERSION} -t  quay.io/santanu_sinha/drove-nixy:latest .
 popd

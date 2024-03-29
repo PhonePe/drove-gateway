@@ -23,16 +23,12 @@ if [ -z "${DROVE_CONTROLLERS}" ]; then
 fi
 IFS=',' read -r -a hosts <<< "${DROVE_CONTROLLERS}"
 export DROVE_CONTROLLER_LIST=$(for host in ${hosts[@]}; do echo "\"$host\""; done|paste -sd ',' -)
-export DROVE_USERNAME="${DROVE_USERNAME:-admin}"
-export DROVE_PASSWORD="${DROVE_PASSWORD:-admin}"
+export DROVE_USERNAME="${DROVE_USERNAME:-guest}"
+export DROVE_PASSWORD="${DROVE_PASSWORD:-guest}"
 
 export NGINX_NUM_WORKERS=${NGINX_NUM_WORKERS:-2}
 export TEMPLATE_PATH=${TEMPLATE_FILE_PATH:-./nginx.tmpl}
 
-if [ -z "${NGINX_DROVE_VHOST}" ]; then
-    echo "NGINX_DROVE_VHOST must be set"
-    exit 1
-fi
 
 DEBUG_ENABLED="${DEBUG:-0}"
 if [ "$DEBUG_ENABLED" -ne 0 ]; then
