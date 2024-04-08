@@ -10,8 +10,12 @@ env:
 #   pull_request:
 #     branches: [ "master" ]
 
-on: workflow_dispatch
-
+on:
+  push:
+    # Pattern matched against refs/tags
+    tags:        
+      - '*'           # Push events to every tag not containing /
+      
 jobs:
 
   build-and-push:
