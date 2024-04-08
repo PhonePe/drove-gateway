@@ -27,7 +27,7 @@ docker run --name nx --rm \
     -e DEBUG=1 \
     -e NGINX_DROVE_VHOST=drove.local \
     --network host \
-    quay.io/santanu_sinha/drove-nixy:latest
+    ghcr.io/phonepe/drove-nixy
 ```
 #### Tuning behaviour using environment variables
 The following environment variables can be used to tune the behaviour of the container.
