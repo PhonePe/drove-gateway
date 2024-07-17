@@ -17,35 +17,39 @@ term_handler() {
 # on callback, kill the last background process, which is `tail -f /dev/null` and execute the specified handler
 trap 'kill ${!}; term_handler' SIGTERM
 
-if [ -z "${DROVE_CONTROLLERS}" ]; then
-    echo "Error: DROVE_CONTROLLER is a mandatory parameter for nixy to work."
-    exit 1
-fi
-IFS=',' read -r -a hosts <<< "${DROVE_CONTROLLERS}"
-export DROVE_CONTROLLER_LIST=$(for host in ${hosts[@]}; do echo "\"$host\""; done|paste -sd ',' -)
-export DROVE_USERNAME="${DROVE_USERNAME:-guest}"
-export DROVE_PASSWORD="${DROVE_PASSWORD:-guest}"
-
-export NGINX_NUM_WORKERS=${NGINX_NUM_WORKERS:-2}
 export TEMPLATE_PATH=${TEMPLATE_FILE_PATH:-./nginx.tmpl}
+if [ -n "${CONFIG_FILE_PATH}" ]; then
+    echo "Config file path updated to ${CONFIG_FILE_PATH}"
+    export CONFIG_PATH="${CONFIG_FILE_PATH}"
+else
+    export CONFIG_PATH="./nixy.toml"
+    if [ -z "${DROVE_CONTROLLERS}" ]; then
+        echo "Error: DROVE_CONTROLLER is a mandatory parameter for nixy to work."
+        exit 1
+    fi
+    IFS=',' read -r -a hosts <<< "${DROVE_CONTROLLERS}"
+    export DROVE_CONTROLLER_LIST=$(for host in "${hosts[@]}"; do echo "\"$host\""; done|paste -sd ',' -)
+    export DROVE_USERNAME="${DROVE_USERNAME:-guest}"
+    export DROVE_PASSWORD="${DROVE_PASSWORD:-guest}"
+
+    export NGINX_NUM_WORKERS=${NGINX_NUM_WORKERS:-2}
 
 
-DEBUG_ENABLED="${DEBUG:-0}"
-if [ "$DEBUG_ENABLED" -ne 0 ]; then
+    if [ "${DEBUG:-0}" -ne 0 ]; then
 
-  echo "Environment variables:"
-  printenv
+      echo "Environment variables:"
+      printenv
 
 
-  echo "Contents of working dir: ${PWD}"
-  ls -l "${PWD}"
+      echo "Contents of working dir: ${PWD}"
+      ls -l "${PWD}"
 
+    fi
+
+    envsubst > nixy.toml < docker-nixy.toml.subst
 fi
-
-envsubst > nixy.toml < docker-nixy.toml.subst
 # envsubst > nginx.tmpl < docker-nginx.tmpl.subst
 
-CONFIG_PATH=${CONFIG_FILE_PATH:-/nixy.toml}
 
 if [ ! -f "${CONFIG_PATH}" ]; then
   echo "Config file ${CONFIG_PATH} not found."
@@ -66,7 +70,7 @@ else
   echo "Config ${TEMPLATE_PATH} file exists. Proceeding to service startup."
 fi
 
-if [ "$DEBUG_ENABLED" -ne 0 ]; then
+if [ "${DEBUG:-0}" -ne 0 ]; then
   cat "${CONFIG_PATH}"
 
   cat "${TEMPLATE_PATH}"

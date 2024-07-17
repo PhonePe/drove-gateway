@@ -26,7 +26,8 @@ The Drove Gateway is provided as a container. You can run the container as follo
 docker run --name nx --rm \
     -e DROVE_CONTROLLERS="http://controller1:4000,http://controller2:4000" \
     -e TZ=Asia/Calcutta \
-    -e DEBUG=1 \
+    -e DROVE_USERNAME=guest \
+    -e DROVE_PASSWORD=guest \
     -e NGINX_DROVE_VHOST=drove.local \
     --network host \
     ghcr.io/phonepe/drove-gateway

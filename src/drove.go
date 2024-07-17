@@ -192,9 +192,6 @@ func pollEvents() {
 						"error": err.Error(),
 					}).Error("unable to sync events from drove")
 				} else {
-					logger.WithFields(logrus.Fields{
-						"events": eventSummary.EventsCount,
-					}).Info("New Events received")
 					if len(eventSummary.EventsCount) > 0 {
 						logger.WithFields(logrus.Fields{
 							"events":    eventSummary.EventsCount,
@@ -216,6 +213,10 @@ func pollEvents() {
 						} else {
 							logger.Debug("Irrelevant events ignored")
 						}
+					} else {
+						logger.WithFields(logrus.Fields{
+							"events": eventSummary.EventsCount,
+						}).Debug("New Events received")
 					}
 				}
 			}()
