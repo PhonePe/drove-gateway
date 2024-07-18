@@ -24,7 +24,7 @@ if [ -n "${CONFIG_FILE_PATH}" ]; then
 else
     export CONFIG_PATH="./nixy.toml"
     if [ -z "${DROVE_CONTROLLERS}" ]; then
-        echo "Error: DROVE_CONTROLLER is a mandatory parameter for nixy to work."
+        echo "Error: DROVE_CONTROLLERS is a mandatory parameter for nixy to work."
         exit 1
     fi
     IFS=',' read -r -a hosts <<< "${DROVE_CONTROLLERS}"
@@ -80,6 +80,7 @@ CMD=$(eval echo "./nixy -f ${CONFIG_PATH}")
 echo "Starting Nixy by running command: ${CMD}"
 
 service nginx start
+service cron start
 eval "${CMD}" &
 
 pid="$!"
