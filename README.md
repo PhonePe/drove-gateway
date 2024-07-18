@@ -18,12 +18,23 @@ Features provided by Drove Gateway
 ## Usage
 Nixy needs TOML a configuration file for managing it's configuration. NGinx configuration is generated from a template file.
 
-### Running with docker
+The container behaviour can be tuned and run in two ways:
 
-The Drove Gateway is provided as a container. You can run the container as follows:
+### Customize using environment variables
+The following environment variables can be used to tune the behaviour of the container.
+
+
+| Variable Name     |                           Required                          | Description                                                                                                                    |
+|-------------------|:-----------------------------------------------------------:|--------------------------------------------------------------------------------------------------------------------------------|
+| DROVE_CONTROLLERS |       **Yes.** List of controllers separated by comma.      | List of individual controller endpoints. Put all controller endpoints here. <br> Nixy will determine the leader automatically. |
+| NGINX_DROVE_VHOST | **Optional** The vhost for drove endpoint to be configured. | If this is set, drove-gateway  will expose the leader controller over the provided vhost.                                                |
+| DROVE_USERNAME    |           **Optional.** Set to `guest` by default.          | Username to login to drove. Read-only user is sufficient.                                                                      |
+| DROVE_PASSWORD    |           **Optional.** Set to `guest` by default.          | Password to drove cluster for the above username.|
+
+You can run the container using following command for example:
 
 ```shell
-docker run --name nx --rm \
+docker run --name dgw --rm \
     -e DROVE_CONTROLLERS="http://controller1:4000,http://controller2:4000" \
     -e TZ=Asia/Calcutta \
     -e DROVE_USERNAME=guest \
@@ -32,15 +43,24 @@ docker run --name nx --rm \
     --network host \
     ghcr.io/phonepe/drove-gateway
 ```
-#### Tuning behaviour using environment variables
-The following environment variables can be used to tune the behaviour of the container.
 
-| Variable Name     |                           Required                          | Description                                                                                                                    |
-|-------------------|:-----------------------------------------------------------:|--------------------------------------------------------------------------------------------------------------------------------|
-| DROVE_CONTROLLERS |       **Yes.** List of controllers separated by comma.      | List of individual controller endpoints. Put all controller endpoints here. <br> Nixy will determine the leader automatically. |
-| NGINX_DROVE_VHOST | **Optional** The vhost for drove endpoint to be configured. | If this is set, drove-gateway  will expose the leader controller over the provided vhost.                                                |
-| DROVE_USERNAME    |           **Optional.** Set to `guest` by default.          | Username to login to drove. Read-only user is sufficient.                                                                      |
-| DROVE_PASSWORD    |           **Optional.** Set to `guest` by default.          | Password to drove cluster for the above username.                                                                              |
+### Override config files completely
+Configure the following environment variables and volume mount the config files.
+
+|Variable Name|Required|Description|
+|-------------|--------|-------------|
+| CONFIG_FILE_PATH | **Yes** | Path to the volume mounted custom TOML file to be used by the gateway-nixy|
+| TEMPLATE_FILE_PATH | **Yes** | Path to the custom tmpl file to be used to generate NGinx config |
+
+You can run the container using following command for example:
+```shell
+docker run --rm --name dgw \
+    --volume /path/to/drove/gwconfigs:/etc/drove/gateway:ro \
+    -e "CONFIG_FILE_PATH=/etc/drove/gateway/gateway.toml" \
+    -e "TEMPLATE_FILE_PATH=/etc/drove/gateway/nginx.tmpl" \
+    --network host \
+    ghcr.io/phonepe/drove-gateway
+```
 
 ## Building drove-gateway
 
