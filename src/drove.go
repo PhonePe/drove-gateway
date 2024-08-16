@@ -26,10 +26,11 @@ import (
 type DroveApps struct {
 	Status string `json:"status"`
 	Apps   []struct {
-		ID    string            `json:"appId"`
-		Vhost string            `json:"vhost"`
-		Tags  map[string]string `json:"tags"`
-		Hosts []struct {
+		ID      string            `json:"appId"`
+		Vhost   string            `json:"vhost"`
+		Tags    map[string]string `json:"tags"`
+		AppName string            `json:"appName"`
+		Hosts   []struct {
 			Host     string `json:"host"`
 			Port     int32  `json:"port"`
 			PortType string `json:"portType"`
