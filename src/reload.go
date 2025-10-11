@@ -422,6 +422,16 @@ func getTmpl() (*template.Template, error) {
 				"datetime":  time.Now,
 			}).
 			ParseFiles(TemplatePath)
+		if tmplCacheErr != nil {
+			logger.WithFields(logrus.Fields{
+				"error": tmplCacheErr,
+				"file":  proxyTemplatePath,
+			}).Error("unable to read template")
+		} else {
+			logger.WithFields(logrus.Fields{
+				"file": proxyTemplatePath,
+			}).Info("Template read successfully")
+		}
 	})
 	return tmplCache, tmplCacheErr
 }
