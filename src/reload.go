@@ -29,6 +29,7 @@ type RenderingData struct {
 	NginxMaxFailsUpstream                 int                               `json:"-" toml:"max_fails"`
 	NginxFailTimeoutUpstream              string                            `json:"-" toml:"nginx_fail_timeout"`
 	NginxSlowStartUpstream                string                            `json:"-" toml:"nginx_slow_start"`
+	HaproxySocketAddr                     string                            `json:"-" toml:"haproxy_socket_addr"`
 	HaproxyAddServerAttributesString      string                            `json:"-" toml:"haproxy_add_server_attributes_string"`
 	HaproxyAddServerSSLAttributesString   string                            `json:"-" toml:"haproxy_add_server_ssl_attributes_string"`
 	HaproxyServerNamePrefix               string                            `json:"-" toml:"haproxy_server_name_prefix"`
@@ -195,6 +196,7 @@ func createRenderingData(data *RenderingData) {
 	data.NginxFailTimeoutUpstream = staticData.NginxFailTimeoutUpstream
 	data.NginxMaxFailsUpstream = staticData.NginxMaxFailsUpstream
 	data.NginxSlowStartUpstream = staticData.NginxSlowStartUpstream
+	data.HaproxySocketAddr = staticData.HaproxySocketAddr
 	data.HaproxyAddServerAttributesString = staticData.HaproxyAddServerAttributesString
 	data.HaproxyAddServerSSLAttributesString = staticData.HaproxyAddServerSSLAttributesString
 	data.HaproxyServerNamePrefix = staticData.HaproxyServerNamePrefix
