@@ -198,7 +198,7 @@ func setloglevel() {
 func setupDataManager() {
 	db = *NewDataManager(config.Xproxy, config.ProxyPlatform, config.LeftDelimiter, config.RightDelimiter,
 		config.NginxMaxFailsUpstream, config.NginxFailTimeoutUpstream, config.NginxSlowStartUpstream,
-		config.HaproxyAddServerAttributesString, config.HaproxyAddServerSSLAttributesString, config.HaproxyServerNamePrefix, config.HaproxyServerNameHostPortSeparator, config.HaproxyBackendNameSeparator, config.HaproxyBackendIncludeRoutingTagSuffix)
+		config.HaproxySocketAddr, config.HaproxyAddServerAttributesString, config.HaproxyAddServerSSLAttributesString, config.HaproxyServerNamePrefix, config.HaproxyServerNameHostPortSeparator, config.HaproxyBackendNameSeparator, config.HaproxyBackendIncludeRoutingTagSuffix)
 	for _, nsConfig := range config.DroveNamespaces {
 		db.CreateNamespace(nsConfig.Name, nsConfig.Drove, nsConfig.User, nsConfig.Pass,
 			nsConfig.AccessToken, nsConfig.Realm, nsConfig.RealmSuffix, nsConfig.RoutingTag, nsConfig.LeaderVHost)

@@ -37,6 +37,7 @@ type StaticConfig struct {
 	NginxMaxFailsUpstream                 int    `json:"-" toml:"max_fails"`
 	NginxFailTimeoutUpstream              string `json:"-" toml:"nginx_fail_timeout"`
 	NginxSlowStartUpstream                string `json:"-" toml:"nginx_slow_start"`
+	HaproxySocketAddr                     string `json:"-" toml:"haproxy_socket_addr"`
 	HaproxyAddServerAttributesString      string `json:"-" toml:"haproxy_add_server_attributes_string"`
 	HaproxyAddServerSSLAttributesString   string `json:"-" toml:"haproxy_add_server_ssl_attributes_string"`
 	HaproxyServerNamePrefix               string `json:"-" toml:"haproxy_server_name_prefix"`
@@ -58,7 +59,7 @@ type DataManager struct {
 
 // NewDataManager creates a new instance of DataManager
 func NewDataManager(inXproxy string, inProxyPlatform string, inLeftDelimiter string, inRightDelimiter string,
-	inNginxMaxFailsUpstream int, inNginxFailTimeoutUpstream string, inNginxSlowStartUpstream string, inHaproxyAddServerAttributesString string, inHaproxyAddServerSSLAttributesString string,
+	inNginxMaxFailsUpstream int, inNginxFailTimeoutUpstream string, inNginxSlowStartUpstream string, inHaproxySocketAddr string, inHaproxyAddServerAttributesString string, inHaproxyAddServerSSLAttributesString string,
 	inHaproxyServerNamePrefix string, inHaproxyServerNameHostPortSeparator string, inHaproxyBackendNameSeparator string, inHaproxyBackendIncludeRoutingTagSuffix bool) *DataManager {
 	emptyLastKnownVhosts := Vhosts{}
 	emptyLastKnownVhosts.Vhosts = make(map[string]bool)
@@ -66,7 +67,7 @@ func NewDataManager(inXproxy string, inProxyPlatform string, inLeftDelimiter str
 		namespaces: make(map[string]NamespaceData),
 		StaticData: StaticConfig{Xproxy: inXproxy, ProxyPlatform: inProxyPlatform, LeftDelimiter: inLeftDelimiter, RightDelimiter: inRightDelimiter,
 			NginxMaxFailsUpstream: inNginxMaxFailsUpstream, NginxFailTimeoutUpstream: inNginxFailTimeoutUpstream, NginxSlowStartUpstream: inNginxSlowStartUpstream,
-			HaproxyAddServerAttributesString: inHaproxyAddServerAttributesString, HaproxyAddServerSSLAttributesString: inHaproxyAddServerSSLAttributesString,
+			HaproxySocketAddr: inHaproxySocketAddr, HaproxyAddServerAttributesString: inHaproxyAddServerAttributesString, HaproxyAddServerSSLAttributesString: inHaproxyAddServerSSLAttributesString,
 			HaproxyServerNamePrefix: inHaproxyServerNamePrefix, HaproxyServerNameHostPortSeparator: inHaproxyServerNameHostPortSeparator,
 			HaproxyBackendNameSeparator: inHaproxyBackendNameSeparator, HaproxyBackendIncludeRoutingTagSuffix: inHaproxyBackendIncludeRoutingTagSuffix},
 		LastKnownVhosts:                emptyLastKnownVhosts,
