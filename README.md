@@ -4,7 +4,7 @@ Drove gateway works as the gateway to expose the interface for the drove cluster
 
 It is built on top of NGinx and Nixy. Nixy is a daemon that automatically configures Nginx for web service containers deployed on the Drove container orchestrator. Support is also available to use HAProxy instead of Nginx.
 
-The Nixy code in this repo is based off the original Nixy codebase which used to do the same work for web services deployed on Apache Mesos and Marathon. Original Nixy Github: https://github.com/martensson/nixy[^1]
+The Nixy code in this repo is based off the original Nixy codebase which used to do the same work for web services deployed on Apache Mesos and Marathon. Original Nixy Github: https://github.com/martensson/nixy
 
 Features provided by Drove Gateway
 - Real-time updates via Drove's event stream to trigger changes
