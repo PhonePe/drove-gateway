@@ -12,7 +12,6 @@ on:
     workflows: ["Release Bot Version Bump"]
     types:
       - completed
-  workflow_dispatch:
       
 jobs:
 

@@ -7,7 +7,6 @@ on:
     workflows: ["Release Bot Version Bump"]
     types:
       - completed
-  workflow_dispatch:
 
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}
