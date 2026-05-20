@@ -29,8 +29,56 @@ jobs:
         if: ${{ steps.tag_filter.outputs.should_bump == 'true' }}
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
+
+      - name: Resolve target branch from tagged commit
+        if: ${{ steps.tag_filter.outputs.should_bump == 'true' }}
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git fetch --prune origin +refs/heads/*:refs/remotes/origin/*
+
+          TAG_COMMIT=$(git rev-list -n 1 "${TAG_NAME}")
+          if [ -z "${TAG_COMMIT}" ]; then
+            echo "Unable to resolve commit for tag ${TAG_NAME}"
+            exit 1
+          fi
+
+          CANDIDATE_BRANCHES=$(git for-each-ref \
+            --contains "${TAG_COMMIT}" \
+            --format='%(refname:short)' \
+            refs/remotes/origin \
+            | sed 's#^origin/##' \
+            | grep -v '^HEAD$' || true)
+
+          if [ -z "${CANDIDATE_BRANCHES}" ]; then
+            echo "No remote branch contains tagged commit ${TAG_COMMIT}; using default branch"
+            TARGET_BRANCH="${DEFAULT_BRANCH}"
+          else
+            TARGET_BRANCH=""
+
+            for branch in ${CANDIDATE_BRANCHES}; do
+              [ -z "${branch}" ] && continue
+              if [ "$(git rev-parse "origin/${branch}")" = "${TAG_COMMIT}" ]; then
+                TARGET_BRANCH="${branch}"
+                break
+              fi
+            done
+
+            if [ -z "${TARGET_BRANCH}" ]; then
+              if printf '%s\n' "${CANDIDATE_BRANCHES}" | grep -qx "${DEFAULT_BRANCH}"; then
+                TARGET_BRANCH="${DEFAULT_BRANCH}"
+              else
+                TARGET_BRANCH=$(printf '%s\n' "${CANDIDATE_BRANCHES}" | head -n1)
+              fi
+            fi
+          fi
+
+          echo "Target branch for bump: ${TARGET_BRANCH}"
+          git checkout -B "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
+          echo "TARGET_BRANCH=${TARGET_BRANCH}" >> "$GITHUB_ENV"
 
       - name: Update RPM spec and Debian control from tag
         if: ${{ steps.tag_filter.outputs.should_bump == 'true' }}
@@ -39,10 +87,42 @@ jobs:
         run: |
           VERSION="${VERSION#v}"
 
-          sed -i "s/^Version:.*/Version:        ${VERSION}/" src/rpmbuild/SPECS/drove-gateway.spec
+          SPEC_FILE=""
+          for candidate in \
+            src/rpmbuild/SPECS/drove-gateway.spec \
+            rpmbuild/SPECS/drove-gateway.spec; do
+            if [ -f "${candidate}" ]; then
+              SPEC_FILE="${candidate}"
+              break
+            fi
+          done
 
-          if grep -q '^X-Release-Version:' src/debian/control; then
-            sed -i "s/^X-Release-Version:.*/X-Release-Version: ${VERSION}/" src/debian/control
+          CONTROL_FILE=""
+          for candidate in \
+            src/debian/control \
+            debian/control; do
+            if [ -f "${candidate}" ]; then
+              CONTROL_FILE="${candidate}"
+              break
+            fi
+          done
+
+          if [ -z "${SPEC_FILE}" ] || [ -z "${CONTROL_FILE}" ]; then
+            echo "Unable to locate packaging files in workspace"
+            echo "Expected one of: src/rpmbuild/SPECS/drove-gateway.spec or rpmbuild/SPECS/drove-gateway.spec"
+            echo "Expected one of: src/debian/control or debian/control"
+            pwd
+            ls -la
+            exit 1
+          fi
+
+          echo "Using spec file: ${SPEC_FILE}"
+          echo "Using control file: ${CONTROL_FILE}"
+
+          sed -i "s/^Version:.*/Version:        ${VERSION}/" "${SPEC_FILE}"
+
+          if grep -q '^X-Release-Version:' "${CONTROL_FILE}"; then
+            sed -i "s/^X-Release-Version:.*/X-Release-Version: ${VERSION}/" "${CONTROL_FILE}"
           else
             awk -v version="${VERSION}" '
               /^Maintainer:/ {
@@ -51,19 +131,31 @@ jobs:
                 next
               }
               { print }
-            ' src/debian/control > src/debian/control.tmp
-            mv src/debian/control.tmp src/debian/control
+            ' "${CONTROL_FILE}" > "${CONTROL_FILE}.tmp"
+            mv "${CONTROL_FILE}.tmp" "${CONTROL_FILE}"
           fi
+
+          echo "SPEC_FILE=${SPEC_FILE}" >> "$GITHUB_ENV"
+          echo "CONTROL_FILE=${CONTROL_FILE}" >> "$GITHUB_ENV"
 
       - name: Commit and push version bump
         if: ${{ steps.tag_filter.outputs.should_bump == 'true' }}
         env:
           VERSION: ${{ github.ref_name }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           VERSION="${VERSION#v}"
 
-          if git diff --quiet -- src/rpmbuild/SPECS/drove-gateway.spec src/debian/control; then
+          if [ -z "${TARGET_BRANCH}" ]; then
+            echo "Target branch is missing; aborting commit step"
+            exit 1
+          fi
+
+          if [ -z "${SPEC_FILE}" ] || [ -z "${CONTROL_FILE}" ]; then
+            echo "Resolved packaging paths are missing; aborting commit step"
+            exit 1
+          fi
+
+          if git diff --quiet -- "${SPEC_FILE}" "${CONTROL_FILE}"; then
             echo "No packaging version changes to commit"
             exit 0
           fi
@@ -71,6 +163,6 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add src/rpmbuild/SPECS/drove-gateway.spec src/debian/control
+          git add "${SPEC_FILE}" "${CONTROL_FILE}"
           git commit -m "chore(release-bot): bump spec/control to ${VERSION} [skip ci]"
-          git push origin "HEAD:${DEFAULT_BRANCH}"
+          git push origin "HEAD:${TARGET_BRANCH}"
