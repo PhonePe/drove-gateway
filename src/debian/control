@@ -2,7 +2,7 @@ Source: drove-gateway
 Section: net
 Priority: optional
 Maintainer: vishnunaini <vishnu.naini@phonepe.com>
-X-Release-Version: 2.0
+X-Release-Version: 2.1
 Build-Depends: debhelper-compat (= 12),
                dh-golang | dh-sequence-golang,
                golang-any (>= 2:1.23~) | golang-1.23-go,
