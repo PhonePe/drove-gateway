@@ -1,0 +1,71 @@
+name: Release Bot Version Bump
+
+on:
+  push:
+    tags: [ '*' ]
+
+jobs:
+  bump-packaging-versions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Bump packaging version for stable releases
+        env:
+          VERSION: ${{ github.ref_name }}
+          TAG_NAME: ${{ github.ref_name }}
+          REPO_NAME: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          VERSION="${VERSION#v}"
+          TAG_LOWER=$(printf '%s' "${TAG_NAME}" | tr '[:upper:]' '[:lower:]')
+
+          if printf '%s' "${TAG_LOWER}" | grep -Eq '(alpha|beta|rc|snapshot|pre)'; then
+            echo "Prerelease tag detected; skipping version bump"
+            exit 0
+          fi
+
+          find_file() {
+            local -a candidates=("$@")
+            for f in "${candidates[@]}"; do
+              [ -f "$f" ] && echo "$f" && return 0
+            done
+            return 1
+          }
+
+          SPEC=$(find_file src/rpmbuild/SPECS/drove-gateway.spec rpmbuild/SPECS/drove-gateway.spec) || {
+            echo "spec file not found"
+            exit 1
+          }
+          CONTROL=$(find_file src/debian/control debian/control) || {
+            echo "control file not found"
+            exit 1
+          }
+          CHANGELOG=$(find_file src/debian/changelog debian/changelog) || {
+            echo "changelog file not found"
+            exit 1
+          }
+
+          sed -i "s/^Version:.*/Version:        ${VERSION}/" "$SPEC"
+          sed -i "s/^X-Release-Version:.*/X-Release-Version: ${VERSION}/" "$CONTROL" || \
+            sed -i "/^Maintainer:/a X-Release-Version: ${VERSION}" "$CONTROL"
+
+          {
+            printf 'drove-gateway (%s) unstable; urgency=medium\n\n  * Release notes: https://github.com/%s/releases/tag/%s\n\n -- github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>  %s\n\n' \
+              "$VERSION" "$REPO_NAME" "$TAG_NAME" "$(date -R)"
+            cat "$CHANGELOG"
+          } > "$CHANGELOG.tmp" && mv "$CHANGELOG.tmp" "$CHANGELOG"
+
+          if ! git diff --quiet -- "$SPEC" "$CONTROL" "$CHANGELOG"; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "$SPEC" "$CONTROL" "$CHANGELOG"
+            git commit -m "chore(release-bot): bump packaging to ${VERSION} [skip ci]"
+            git push origin "HEAD:${DEFAULT_BRANCH}"
+          fi

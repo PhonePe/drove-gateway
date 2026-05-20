@@ -1,5 +1,5 @@
 Name:           drove-gateway
-Version:        2.0
+Version:        2.1
 # Release field: default to 1 for releases, but can be overridden by workflows for snapshots
 # Workflows can pass -D snapshot_release="0.snapshot.branch.hash" at rpmbuild time
 Release:        %{?snapshot_release}%{!?snapshot_release:1}%{?dist}
