@@ -1,0 +1,20 @@
+Source: drove-gateway
+Section: net
+Priority: optional
+Maintainer: vishnunaini <vishnu.naini@phonepe.com>
+Build-Depends: debhelper-compat (= 12),
+               dh-golang | dh-sequence-golang,
+               golang-any (>= 2:1.23~) | golang-1.23-go,
+               git
+Standards-Version: 4.5.1
+Homepage: https://github.com/phonepe/drove-gateway
+Rules-Requires-Root: no
+
+Package: drove-gateway
+Architecture: any
+Depends: ${shlibs:Depends},
+         ${misc:Depends},
+         systemd
+Recommends: nginx | haproxy
+Suggests: nginx-plus
+Description: Drove gateway daemon for Nginx/HAProxy configuration management

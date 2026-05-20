@@ -25,14 +25,25 @@ case $OS in
         "armv8")
             ARCH=arm64
             ;;
-        .*386.*)
+        *386*)
             ARCH=386
             ;;
         esac
         PLATFORM="linux-$ARCH"
     ;;
     "Darwin")
-        PLATFORM="darwin-amd64"
+        case $ARCH in
+        "arm64")
+            PLATFORM="darwin-arm64"
+            ;;
+        "x86_64"|"amd64")
+            PLATFORM="darwin-amd64"
+            ;;
+        *)
+            echo "Unsupported Darwin architecture: $ARCH"
+            exit 1
+            ;;
+        esac
     ;;
 esac
 

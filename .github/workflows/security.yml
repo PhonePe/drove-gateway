@@ -1,0 +1,64 @@
+name: Security
+
+on:
+  push:
+    branches: [ master, develop ]
+  pull_request:
+    branches: [ master, develop ]
+
+jobs:
+  dependency-check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.23']
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4 # v4
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Download dependencies
+        run: |
+          go -C src mod download
+          go -C src mod verify
+      
+      - name: Check for vulnerable dependencies
+        run: |
+          # Pin nancy to an immutable commit SHA for supply-chain safety.
+          go -C src list -json -m all | go run github.com/sonatype-nexus-community/nancy@143e32c492fe30774d528558eaf850d66f3d2cb9 sleuth
+        continue-on-error: true
+      
+      - name: Run dependabot
+        uses: dependabot/fetch-metadata@8348ea7f5d949b08c7f125a44b569c9626b05db3 # v1
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: "${{ secrets.GITHUB_TOKEN }}"
+        continue-on-error: true
+
+  trivy-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      
+      - name: Run Trivy vulnerability scanner (filesystem)
+        # Pinned to an immutable commit SHA for supply-chain safety.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+        continue-on-error: true
+      
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@458d36d7d4f47d0dd16ca424c1d3cda0060f1360 # v3
+        with:
+          sarif_file: 'trivy-results.sarif'
+        if: always()

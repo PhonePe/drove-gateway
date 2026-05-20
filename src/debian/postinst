@@ -1,0 +1,80 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        # Ensure service is enabled on first install.
+        if [ -z "$2" ]; then
+            deb-systemd-helper enable drove.gateway.service >/dev/null || true
+            if [ -d /run/systemd/system ]; then
+                systemctl enable drove.gateway.service >/dev/null 2>&1 || true
+            fi
+        fi
+
+        if [ ! -d /etc/nixy ]; then
+            mkdir -p /etc/nixy
+            chmod 755 /etc/nixy
+        fi
+        
+        if [ ! -f /etc/nixy/nixy.toml ]; then
+            if [ -f /etc/nixy/nixy.toml.example ]; then
+                cp /etc/nixy/nixy.toml.example /etc/nixy/nixy.toml
+                chmod 644 /etc/nixy/nixy.toml
+            fi
+        fi
+        
+        if [ -d /etc/nixy ]; then
+            # Symlink /etc/nixy/examples to /usr/share/nixy-templates
+            if [ ! -L /etc/nixy/examples ]; then
+                rm -rf /etc/nixy/examples
+                ln -s /usr/share/nixy-templates /etc/nixy/examples
+            fi
+            # Only install nginx.tmpl if not present, using .dpkg-new from install
+            src_nginx="/etc/nixy/nginx.tmpl.dpkg-new"
+            dest_nginx="/etc/nixy/nginx.tmpl"
+            if [ -f "$src_nginx" ] && [ ! -f "$dest_nginx" ]; then
+                mv "$src_nginx" "$dest_nginx"
+                chmod 644 "$dest_nginx" 2>/dev/null || true
+            fi
+        fi
+        
+        # Migration from older nixy.service to drove.gateway.service
+        if [ -f /var/lib/drove-gateway/.nixy-was-enabled ]; then
+            echo "Migrating from nixy.service to drove.gateway.service..."
+
+            # Remove any stale or conflicting /etc/systemd/system/nixy.service
+            if [ -e /etc/systemd/system/nixy.service ]; then
+                rm -f /etc/systemd/system/nixy.service
+            fi
+
+            # Disable the old nixy.service if present
+            if [ -e /lib/systemd/system/nixy.service ]; then
+                deb-systemd-helper disable nixy.service >/dev/null || true
+                deb-systemd-helper unmask nixy.service >/dev/null || true
+            fi
+
+            # Ensure drove.gateway.service file exists before enabling
+            if [ -e /lib/systemd/system/drove.gateway.service ]; then
+                deb-systemd-helper enable drove.gateway.service >/dev/null || true
+                deb-systemd-helper start drove.gateway.service >/dev/null || true
+            else
+                echo "Warning: /lib/systemd/system/drove.gateway.service not found, skipping enable/start."
+            fi
+
+            # Clean up migration marker
+            rm -f /var/lib/drove-gateway/.nixy-was-enabled
+            rmdir /var/lib/drove-gateway 2>/dev/null || true
+
+            echo "Migration completed: Service is now running as drove.gateway.service"
+        fi
+        ;;
+    
+    abort-upgrade|abort-remove|abort-deconfigure)
+        # No action needed
+        ;;
+esac
+
+# Run debhelper-generated code
+#DEBHELPER#
+
+exit 0

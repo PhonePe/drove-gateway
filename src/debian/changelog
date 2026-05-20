@@ -1,0 +1,5 @@
+drove-gateway (2.0) unstable; urgency=medium
+
+  * Initial release with deb/rpm packaging.
+
+ -- vishnunaini <vishnu.naini@phonepe.com>  Thu, 26 Feb 2026 12:00:00 +0000

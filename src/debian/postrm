@@ -1,0 +1,31 @@
+#!/bin/sh
+set -e
+
+# Post-removal script for drove-gateway
+
+case "$1" in
+    purge)
+        # Remove configuration directory only on purge
+        if [ -d /etc/nixy ]; then
+            rm -rf /etc/nixy
+        fi
+        
+        # Clean up migration marker and state directory
+        if [ -d /var/lib/drove-gateway ]; then
+            rm -rf /var/lib/drove-gateway
+        fi
+        ;;
+    
+    remove|upgrade|failed-upgrade|disappear)
+        # Clean up migration marker on any removal/upgrade
+        if [ -f /var/lib/drove-gateway/.nixy-was-enabled ]; then
+            rm -f /var/lib/drove-gateway/.nixy-was-enabled
+            rmdir /var/lib/drove-gateway 2>/dev/null || true
+        fi
+        ;;
+esac
+
+# Run debhelper-generated code
+#DEBHELPER#
+
+exit 0

@@ -1,0 +1,16 @@
+# Debian install file - explicitly defines what gets installed where
+# Format: source destination
+
+# Binary
+nixy usr/bin/
+
+# Systemd service file staged into debian/examples during build
+debian/examples/drove.gateway.service lib/systemd/system/
+
+# Configuration and templates
+nixy.toml etc/nixy/nixy.toml.example
+nginx.tmpl etc/nixy/nginx.tmpl.dpkg-new
+
+# Examples (documentation)
+debian/examples/*.tmpl usr/share/doc/drove-gateway/examples/
+debian/examples/nixy.toml usr/share/doc/drove-gateway/examples/nixy.toml.example

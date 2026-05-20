@@ -1,0 +1,63 @@
+name: Build
+
+on:
+  push:
+    branches: [ master, develop ]
+  pull_request:
+    branches: [ master, develop ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ['1.23']
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      
+      - name: Set up Go
+        uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4 # v4
+        with:
+          go-version: ${{ matrix.go-version }}
+      
+      - name: Cache Go modules
+        uses: actions/cache@6f8efc29b200d32929f49075959781ed54ec270c # v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ matrix.go-version }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ matrix.go-version }}-
+      
+      - name: Download dependencies
+        run: |
+          go -C src mod download
+          go -C src mod verify
+      
+      - name: Extract version
+        id: version
+        run: |
+          # src/debian/changelog is the single source of truth for the upstream version
+          VERSION=$(grep -m1 '^drove-gateway' src/debian/changelog | grep -oP '\(\K[^)]+' | cut -d- -f1)
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Build binary
+        run: |
+          go -C src build -v \
+            -ldflags="-X main.version=${{ steps.version.outputs.version }} -X main.commit=${{ github.sha }}" \
+            -o ../nixy .
+      
+      - name: Verify binary
+        run: |
+          file ./nixy
+          ./nixy -v || true
+      
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nixy-${{ runner.os }}-${{ matrix.go-version }}
+          path: nixy
+          retention-days: 5

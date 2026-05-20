@@ -1,0 +1,102 @@
+name: RPM Release
+
+on:
+  push:
+    tags: [ '*' ]
+  workflow_dispatch:
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          append_body: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-rpm:
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - el: el9
+            container: registry.access.redhat.com/ubi9/ubi:latest
+          - el: el10
+            container: registry.access.redhat.com/ubi10/ubi:latest
+    container: ${{ matrix.container }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y \
+            gcc \
+            git \
+            golang \
+            systemd-rpm-macros \
+            rpm-build \
+            rpmdevtools \
+            redhat-rpm-config
+
+      - name: Configure Git
+        run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Update spec version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^Version:.*/Version:        ${VERSION}/" src/rpmbuild/SPECS/drove-gateway.spec
+
+      - name: Prepare sources
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          rpmdev-setuptree
+          cp src/rpmbuild/SPECS/drove-gateway.spec ~/rpmbuild/SPECS/
+          tar --exclude='.git' --exclude='.github' --exclude='src/rpmbuild' \
+              -czf ~/rpmbuild/SOURCES/drove-gateway-${VERSION}.tar.gz \
+              --transform 's|^\./|drove-gateway/|' \
+              -C . .
+
+      - name: Build
+        run: rpmbuild -ba ~/rpmbuild/SPECS/drove-gateway.spec
+
+      - name: Verify
+        run: |
+          rpm -qi  ~/rpmbuild/RPMS/$(uname -m)/drove-gateway-*.rpm
+          rpm -pql ~/rpmbuild/RPMS/$(uname -m)/drove-gateway-*.rpm
+
+      - name: Copy artifacts to workspace
+        run: |
+          mkdir -p rpm-output
+          find ~/rpmbuild/RPMS/$(uname -m)/ -name '*.rpm' \
+            ! -name '*-debuginfo-*' \
+            ! -name '*-debugsource-*' \
+            -exec cp {} rpm-output/ \;
+          if ! ls rpm-output/*.rpm 1> /dev/null 2>&1; then
+            echo "No RPM artifacts copied to rpm-output/"
+            exit 1
+          fi
+          sha256sum rpm-output/*.rpm > rpm-output/SHA256SUMS-${{ matrix.el }}.txt
+          cat rpm-output/SHA256SUMS-${{ matrix.el }}.txt
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          append_body: true
+          body: |
+            ${{ matrix.el }}  : published
+          files: rpm-output/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

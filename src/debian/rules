@@ -1,0 +1,74 @@
+#!/usr/bin/make -f
+
+# Version is set entirely by CI via debian/changelog; no snapshot/release logic here
+BASE_VERSION  := $(shell dpkg-parsechangelog -S Version | cut -d- -f1)
+VERSION       := $(BASE_VERSION)
+DATE          := $(shell date +"%Y-%m-%d %H:%M:%S")
+COMMIT        := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+# Only set commit flag if known
+ifneq ($(COMMIT),unknown)
+	COMMIT_LDFLAG := -X "main.commit=$(COMMIT)"
+else
+	COMMIT_LDFLAG :=
+endif
+
+LDFLAGS := -X "main.version=$(VERSION)" -X "main.date=$(DATE)" $(COMMIT_LDFLAG)
+
+# Go module name - needed by dh-sequence-golang to avoid uninitialized variable warnings
+export DH_GOPKG=nixy
+
+
+# Skip debugsource packages (no .ddebs)
+export DEB_BUILD_OPTIONS=noddebs
+
+# Enable all hardening, including RELRO and PIE
+export DEB_BUILD_MAINT_OPTIONS=hardening=+all
+
+# Disable debug section compression for C/C++
+export DEB_CFLAGS_MAINT_APPEND=-gz=none
+export DEB_CXXFLAGS_MAINT_APPEND=-gz=none
+
+# Disable dwz for Go binaries (avoids errors with compressed debug sections)
+export DH_DWZ_DISABLE=1
+
+# Ensure proxy settings are passed to the build
+export http_proxy
+export https_proxy
+# Force module mode so -mod=mod is valid even when environment defaults to GOPATH mode.
+export GO111MODULE=on
+# Enable module downloads (override any GOPROXY=off from environment)
+export GOPROXY=https://proxy.golang.org,direct
+export GOTOOLCHAIN=local
+
+%:
+	dh $@
+
+# Override build step: compile the Go binary from src/
+# dh-sequence-golang will handle standard module detection, but we need custom LDFLAGS and PIE
+override_dh_auto_build:
+	go build -mod=mod -buildmode=pie -v -ldflags '$(LDFLAGS)' -o nixy .
+	mkdir -p debian/examples
+	cp -a ../examples/. debian/examples/
+
+# Override install step: install binary only; let dh_install handle the rest via debian/install
+override_dh_auto_install:
+	mkdir -p debian/drove-gateway/usr/bin
+	cp nixy debian/drove-gateway/usr/bin/nixy
+
+# Skip automatic tests (no tests defined)
+override_dh_auto_test:
+	# No automated tests to run
+
+# Install systemd service file
+override_dh_installsystemd:
+	dh_installsystemd --restart-after-upgrade
+
+# Fully disable dwz step
+override_dh_dwz:
+	# Do nothing
+
+# Clean build artifacts and helper files
+override_dh_clean:
+	dh_clean
+	rm -rf .gopath nixy nixy.exe nixy.test obj-* debian/drove-gateway/usr/bin/nixy debian/examples

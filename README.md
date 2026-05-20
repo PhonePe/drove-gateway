@@ -69,9 +69,14 @@ docker run --rm --name dgw \
 
 ## Building drove-gateway
 
-There is a script inside `scripts` directory for building the binary. Please run `bash ./gobuild.sh` to build the binary and the docker.
+Use the helper scripts from repository root:
 
-We are also actively working on adding `deb`/`rpm` package generation directly into the build process.
+```bash
+bash scripts/gobuild.sh
+bash scripts/gorun.sh
+```
+
+For Debian/RPM packaging, refer to `BUILD.md` and `PACKAGING.md`.
 
 ## Configuration Options (`nixy.toml`)
 

@@ -1,0 +1,88 @@
+name: RPM Build
+
+on:
+  pull_request:
+    branches: [ main, master, develop ]
+  push:
+    branches: [ main, master, develop ]
+  workflow_dispatch:
+
+jobs:
+  build-rpm:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - el: el9
+            container: registry.access.redhat.com/ubi9/ubi:latest
+          - el: el10
+            container: registry.access.redhat.com/ubi10/ubi:latest
+    container: ${{ matrix.container }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          dnf install -y \
+            gcc \
+            git \
+            golang \
+            systemd-rpm-macros \
+            rpm-build \
+            rpmdevtools \
+            redhat-rpm-config
+
+      - name: Configure Git
+        run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Compute snapshot release string
+        run: |
+          BRANCH_NAME="${{ github.head_ref }}"
+          if [ -z "${BRANCH_NAME}" ]; then
+            BRANCH_NAME="${{ github.ref_name }}"
+          fi
+          BRANCH=$(echo "${BRANCH_NAME}" | sed 's|[/_]|.|g; s|[^a-zA-Z0-9.]||g')
+          SHORT_SHA=$(printf '%s' "${GITHUB_SHA}" | cut -c1-7)
+          SNAPSHOT_RELEASE="0.snapshot.${BRANCH}.${SHORT_SHA}"
+          echo "SNAPSHOT_RELEASE=${SNAPSHOT_RELEASE}" >> "$GITHUB_ENV"
+
+      - name: Prepare sources
+        run: |
+          BASE_VERSION=$(sed -n '1s/^drove-gateway (\([^)]*\)).*/\1/p' src/debian/changelog | cut -d- -f1)
+          rpmdev-setuptree
+          cp src/rpmbuild/SPECS/drove-gateway.spec ~/rpmbuild/SPECS/
+          # Tarball top-level dir must match %setup -n drove-gateway in spec
+          tar --exclude='.git' --exclude='.github' --exclude='src/rpmbuild' \
+              -czf ~/rpmbuild/SOURCES/drove-gateway-${BASE_VERSION}.tar.gz \
+              --transform 's|^\./|drove-gateway/|' \
+              -C . .
+
+      - name: Build
+        run: rpmbuild -ba -D "snapshot_release ${SNAPSHOT_RELEASE}" ~/rpmbuild/SPECS/drove-gateway.spec
+
+      - name: Verify
+        run: |
+          rpm -qi  ~/rpmbuild/RPMS/$(uname -m)/drove-gateway-*.rpm
+          rpm -pql ~/rpmbuild/RPMS/$(uname -m)/drove-gateway-*.rpm
+
+      - name: Copy artifacts to workspace
+        run: |
+          mkdir -p rpm-output
+          if ! ls ~/rpmbuild/RPMS/$(uname -m)/*.rpm 1> /dev/null 2>&1; then
+            echo "No binary RPMs found in ~/rpmbuild/RPMS/$(uname -m)"
+            exit 1
+          fi
+          cp ~/rpmbuild/RPMS/$(uname -m)/*.rpm rpm-output/
+          cp ~/rpmbuild/SRPMS/*.src.rpm        rpm-output/
+
+      - name: Upload RPM artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: snapshot-rpm-${{ matrix.el }}-${{ github.sha }}
+          path: rpm-output/
+          retention-days: 30
+        if: always()

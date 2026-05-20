@@ -1,0 +1,174 @@
+name: Debian Release
+
+on:
+  push:
+    tags: [ '*' ]
+  workflow_dispatch:
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          append_body: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-deb:
+    needs: [create-release]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+            - distro: ubuntu-22.04
+              container: ubuntu:22.04
+              os_label: Ubuntu 22.04 (Jammy)
+            - distro: ubuntu-24.04
+              container: ubuntu:24.04
+              os_label: Ubuntu 24.04 (Noble)
+            - distro: ubuntu-26.04
+              container: ubuntu:26.04
+              os_label: Ubuntu 26.04 (Resolute)
+            - distro: debian-13
+              container: debian:trixie
+              os_label: Debian 13 (Trixie)
+            - distro: debian-12
+              container: debian:bookworm
+              os_label: Debian 12 (Bookworm)
+            - distro: ubuntu-20.04
+              container: ubuntu:20.04
+              os_label: Ubuntu 20.04 (Focal)
+    container: ${{ matrix.container }}
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Clean build tree
+        run: |
+          cd src && dh clean || true
+
+      - name: Install build dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          if [ "${{ matrix.distro }}" = "ubuntu-20.04" ]; then
+            apt-get update
+            apt-get install -y --no-install-recommends software-properties-common
+            add-apt-repository -y ppa:longsleep/golang-backports
+          fi
+          if [ "${{ matrix.distro }}" = "debian-12" ]; then
+            echo 'deb http://deb.debian.org/debian bookworm-backports main' > /etc/apt/sources.list.d/bookworm-backports.list
+            apt-get update
+          fi
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            curl \
+            devscripts \
+            equivs \
+            git \
+            libdistro-info-perl \
+            lintian \
+            perl
+
+          # Build the build-deps package from src/debian/control, then install it explicitly.
+          rm -f ./*build-deps*.deb
+          mk-build-deps --build-dep src/debian/control
+          BUILD_DEPS_DEB=$(find . -maxdepth 1 -type f -name '*build-deps*.deb' | head -n1)
+          if [ -z "${BUILD_DEPS_DEB}" ]; then
+            echo "No *build-deps*.deb package found after mk-build-deps"
+            exit 1
+          fi
+          apt-get install -y --no-install-recommends "${BUILD_DEPS_DEB}"
+          rm -f "${BUILD_DEPS_DEB}"
+
+      - name: Ensure Go 1.23 is in PATH
+        run: |
+          if [ -d /usr/lib/go-1.23/bin ]; then
+            echo "/usr/lib/go-1.23/bin found, adding to PATH"
+            echo "/usr/lib/go-1.23/bin" >> $GITHUB_PATH
+          fi
+
+      - name: Configure Git
+        run: git config --global --add safe.directory "$(pwd)"
+
+      - name: Update changelog version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          OS_SUFFIX=$(echo "${{ matrix.distro }}" | sed 's/-//')
+          sed -i "s/^drove-gateway ([^)]*)/drove-gateway (${VERSION}+${OS_SUFFIX})/" src/debian/changelog
+
+      - name: Build
+        run: |
+          cd src
+          if [ "${{ startsWith(matrix.distro, 'ubuntu-') }}" = "true" ]; then
+            # Ubuntu containers may not satisfy Debian-specific Build-Depends exactly.
+            # Build with deps preinstalled and skip strict checkbuilddeps gate.
+            dpkg-buildpackage -us -uc -b -d
+          else
+            dpkg-buildpackage -us -uc -b
+          fi
+
+      - name: Verify package contents
+        run: |
+          ls -lh *.deb || echo "No .deb files generated"
+
+          DEB_FILES=$(find . -maxdepth 1 -type f -name '*.deb' ! -name '*build-deps*' -print)
+          if [ -n "${DEB_FILES}" ]; then
+            echo "Package contents:"
+            for deb in ${DEB_FILES}; do
+              dpkg -c "${deb}" | head -30
+            done
+          fi
+
+      - name: Verify package integrity
+        run: |
+          DEB_FILES=$(find . -maxdepth 1 -type f -name '*.deb' ! -name '*build-deps*' -print)
+          if [ -n "${DEB_FILES}" ]; then
+            echo "Package information:"
+            for deb in ${DEB_FILES}; do
+              dpkg -I "${deb}"
+              echo
+            done
+            echo "Running lintian checks..."
+            lintian -i ${DEB_FILES} || true
+          fi
+
+      - name: Generate checksums
+        run: |
+          DEB_FILES=$(find . -maxdepth 1 -type f -name '*.deb' ! -name '*build-deps*' -print)
+          if [ -z "${DEB_FILES}" ]; then
+            echo "No .deb files found for checksum generation"
+            exit 1
+          fi
+          sha256sum ${DEB_FILES} > SHA256SUMS-${{ matrix.distro }}.txt
+          cat SHA256SUMS-${{ matrix.distro }}.txt
+
+      - name: Stage release assets in workspace
+        run: |
+          mkdir -p debian-release-assets
+          cp drove-gateway_*.deb debian-release-assets/
+          cp *.changes debian-release-assets/ 2>/dev/null || true
+          cp SHA256SUMS-${{ matrix.distro }}.txt debian-release-assets/
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          append_body: true
+          body: |
+            ${{ matrix.os_label }}: published
+          files: |
+            debian-release-assets/*.deb
+            debian-release-assets/SHA256SUMS-${{ matrix.distro }}.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
