@@ -13,9 +13,8 @@ if [ "$?" -ne 0 ]; then
 fi
 
 echo "Build version details:"
-cp "${REPO_ROOT}/nixy" "${SCRIPT_DIR}/nixy"
 
 pushd "${REPO_ROOT}/docker"
-cp "${SCRIPT_DIR}/nixy" .
+cp "${REPO_ROOT}/nixy" .
 docker build -t ghcr.io/phonepe/drove-gateway:${VERSION} -t  ghcr.io/phonepe/drove-gateway:latest .
 popd

@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
 
@@ -164,7 +164,7 @@ jobs:
 
       - name: Upload Debian package artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: snapshot-debian-${{ matrix.distro }}-${{ github.sha }}
           path: debian-artifacts/
@@ -172,7 +172,7 @@ jobs:
 
       - name: Upload build logs artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: snapshot-debian-${{ matrix.distro }}-build-logs-${{ github.sha }}
           path: debian-artifacts/build-logs/
