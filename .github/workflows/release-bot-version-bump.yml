@@ -1,0 +1,76 @@
+name: Release Bot Version Bump
+
+on:
+  push:
+    tags: [ '*' ]
+
+jobs:
+  bump-packaging-versions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Filter prerelease tags
+        id: tag_filter
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          TAG_LOWER=$(printf '%s' "${TAG_NAME}" | tr '[:upper:]' '[:lower:]')
+          if printf '%s' "${TAG_LOWER}" | grep -Eq '(alpha|beta|rc|snapshot|pre)'; then
+            echo "Tag ${TAG_NAME} is prerelease, skipping version bump"
+            echo "should_bump=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag ${TAG_NAME} is stable, proceeding with version bump"
+            echo "should_bump=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout default branch
+        if: ${{ steps.tag_filter.outputs.should_bump == 'true' }}
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Update RPM spec and Debian control from tag
+        if: ${{ steps.tag_filter.outputs.should_bump == 'true' }}
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: |
+          VERSION="${VERSION#v}"
+
+          sed -i "s/^Version:.*/Version:        ${VERSION}/" src/rpmbuild/SPECS/drove-gateway.spec
+
+          if grep -q '^X-Release-Version:' src/debian/control; then
+            sed -i "s/^X-Release-Version:.*/X-Release-Version: ${VERSION}/" src/debian/control
+          else
+            awk -v version="${VERSION}" '
+              /^Maintainer:/ {
+                print $0
+                print "X-Release-Version: " version
+                next
+              }
+              { print }
+            ' src/debian/control > src/debian/control.tmp
+            mv src/debian/control.tmp src/debian/control
+          fi
+
+      - name: Commit and push version bump
+        if: ${{ steps.tag_filter.outputs.should_bump == 'true' }}
+        env:
+          VERSION: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          VERSION="${VERSION#v}"
+
+          if git diff --quiet -- src/rpmbuild/SPECS/drove-gateway.spec src/debian/control; then
+            echo "No packaging version changes to commit"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add src/rpmbuild/SPECS/drove-gateway.spec src/debian/control
+          git commit -m "chore(release-bot): bump spec/control to ${VERSION} [skip ci]"
+          git push origin "HEAD:${DEFAULT_BRANCH}"
