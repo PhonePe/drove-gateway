@@ -11,158 +11,61 @@ jobs:
       contents: write
 
     steps:
-      - name: Filter prerelease tags
-        id: tag_filter
-        env:
-          TAG_NAME: ${{ github.ref_name }}
-        run: |
-          TAG_LOWER=$(printf '%s' "${TAG_NAME}" | tr '[:upper:]' '[:lower:]')
-          if printf '%s' "${TAG_LOWER}" | grep -Eq '(alpha|beta|rc|snapshot|pre)'; then
-            echo "Tag ${TAG_NAME} is prerelease, skipping version bump"
-            echo "should_bump=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "Tag ${TAG_NAME} is stable, proceeding with version bump"
-            echo "should_bump=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout default branch
-        if: ${{ steps.tag_filter.outputs.should_bump == 'true' }}
+      - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          ref: ${{ github.ref_name }}
           fetch-depth: 0
 
-      - name: Resolve target branch from tagged commit
-        if: ${{ steps.tag_filter.outputs.should_bump == 'true' }}
+      - name: Bump packaging version for stable releases
         env:
+          VERSION: ${{ github.ref_name }}
           TAG_NAME: ${{ github.ref_name }}
+          REPO_NAME: ${{ github.repository }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
-          git fetch --prune origin +refs/heads/*:refs/remotes/origin/*
-
-          TAG_COMMIT=$(git rev-list -n 1 "${TAG_NAME}")
-          if [ -z "${TAG_COMMIT}" ]; then
-            echo "Unable to resolve commit for tag ${TAG_NAME}"
-            exit 1
-          fi
-
-          CANDIDATE_BRANCHES=$(git for-each-ref \
-            --contains "${TAG_COMMIT}" \
-            --format='%(refname:short)' \
-            refs/remotes/origin \
-            | sed 's#^origin/##' \
-            | grep -v '^HEAD$' || true)
-
-          if [ -z "${CANDIDATE_BRANCHES}" ]; then
-            echo "No remote branch contains tagged commit ${TAG_COMMIT}; using default branch"
-            TARGET_BRANCH="${DEFAULT_BRANCH}"
-          else
-            TARGET_BRANCH=""
-
-            for branch in ${CANDIDATE_BRANCHES}; do
-              [ -z "${branch}" ] && continue
-              if [ "$(git rev-parse "origin/${branch}")" = "${TAG_COMMIT}" ]; then
-                TARGET_BRANCH="${branch}"
-                break
-              fi
-            done
-
-            if [ -z "${TARGET_BRANCH}" ]; then
-              if printf '%s\n' "${CANDIDATE_BRANCHES}" | grep -qx "${DEFAULT_BRANCH}"; then
-                TARGET_BRANCH="${DEFAULT_BRANCH}"
-              else
-                TARGET_BRANCH=$(printf '%s\n' "${CANDIDATE_BRANCHES}" | head -n1)
-              fi
-            fi
-          fi
-
-          echo "Target branch for bump: ${TARGET_BRANCH}"
-          git checkout -B "${TARGET_BRANCH}" "origin/${TARGET_BRANCH}"
-          echo "TARGET_BRANCH=${TARGET_BRANCH}" >> "$GITHUB_ENV"
-
-      - name: Update RPM spec and Debian control from tag
-        if: ${{ steps.tag_filter.outputs.should_bump == 'true' }}
-        env:
-          VERSION: ${{ github.ref_name }}
-        run: |
           VERSION="${VERSION#v}"
+          TAG_LOWER=$(printf '%s' "${TAG_NAME}" | tr '[:upper:]' '[:lower:]')
 
-          SPEC_FILE=""
-          for candidate in \
-            src/rpmbuild/SPECS/drove-gateway.spec \
-            rpmbuild/SPECS/drove-gateway.spec; do
-            if [ -f "${candidate}" ]; then
-              SPEC_FILE="${candidate}"
-              break
-            fi
-          done
-
-          CONTROL_FILE=""
-          for candidate in \
-            src/debian/control \
-            debian/control; do
-            if [ -f "${candidate}" ]; then
-              CONTROL_FILE="${candidate}"
-              break
-            fi
-          done
-
-          if [ -z "${SPEC_FILE}" ] || [ -z "${CONTROL_FILE}" ]; then
-            echo "Unable to locate packaging files in workspace"
-            echo "Expected one of: src/rpmbuild/SPECS/drove-gateway.spec or rpmbuild/SPECS/drove-gateway.spec"
-            echo "Expected one of: src/debian/control or debian/control"
-            pwd
-            ls -la
-            exit 1
-          fi
-
-          echo "Using spec file: ${SPEC_FILE}"
-          echo "Using control file: ${CONTROL_FILE}"
-
-          sed -i "s/^Version:.*/Version:        ${VERSION}/" "${SPEC_FILE}"
-
-          if grep -q '^X-Release-Version:' "${CONTROL_FILE}"; then
-            sed -i "s/^X-Release-Version:.*/X-Release-Version: ${VERSION}/" "${CONTROL_FILE}"
-          else
-            awk -v version="${VERSION}" '
-              /^Maintainer:/ {
-                print $0
-                print "X-Release-Version: " version
-                next
-              }
-              { print }
-            ' "${CONTROL_FILE}" > "${CONTROL_FILE}.tmp"
-            mv "${CONTROL_FILE}.tmp" "${CONTROL_FILE}"
-          fi
-
-          echo "SPEC_FILE=${SPEC_FILE}" >> "$GITHUB_ENV"
-          echo "CONTROL_FILE=${CONTROL_FILE}" >> "$GITHUB_ENV"
-
-      - name: Commit and push version bump
-        if: ${{ steps.tag_filter.outputs.should_bump == 'true' }}
-        env:
-          VERSION: ${{ github.ref_name }}
-        run: |
-          VERSION="${VERSION#v}"
-
-          if [ -z "${TARGET_BRANCH}" ]; then
-            echo "Target branch is missing; aborting commit step"
-            exit 1
-          fi
-
-          if [ -z "${SPEC_FILE}" ] || [ -z "${CONTROL_FILE}" ]; then
-            echo "Resolved packaging paths are missing; aborting commit step"
-            exit 1
-          fi
-
-          if git diff --quiet -- "${SPEC_FILE}" "${CONTROL_FILE}"; then
-            echo "No packaging version changes to commit"
+          if printf '%s' "${TAG_LOWER}" | grep -Eq '(alpha|beta|rc|snapshot|pre)'; then
+            echo "Prerelease tag detected; skipping version bump"
             exit 0
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          find_file() {
+            local -a candidates=("$@")
+            for f in "${candidates[@]}"; do
+              [ -f "$f" ] && echo "$f" && return 0
+            done
+            return 1
+          }
 
-          git add "${SPEC_FILE}" "${CONTROL_FILE}"
-          git commit -m "chore(release-bot): bump spec/control to ${VERSION} [skip ci]"
-          git push origin "HEAD:${TARGET_BRANCH}"
+          SPEC=$(find_file src/rpmbuild/SPECS/drove-gateway.spec rpmbuild/SPECS/drove-gateway.spec) || {
+            echo "spec file not found"
+            exit 1
+          }
+          CONTROL=$(find_file src/debian/control debian/control) || {
+            echo "control file not found"
+            exit 1
+          }
+          CHANGELOG=$(find_file src/debian/changelog debian/changelog) || {
+            echo "changelog file not found"
+            exit 1
+          }
+
+          sed -i "s/^Version:.*/Version:        ${VERSION}/" "$SPEC"
+          sed -i "s/^X-Release-Version:.*/X-Release-Version: ${VERSION}/" "$CONTROL" || \
+            sed -i "/^Maintainer:/a X-Release-Version: ${VERSION}" "$CONTROL"
+
+          {
+            printf 'drove-gateway (%s) unstable; urgency=medium\n\n  * Release notes: https://github.com/%s/releases/tag/%s\n\n -- github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>  %s\n\n' \
+              "$VERSION" "$REPO_NAME" "$TAG_NAME" "$(date -R)"
+            cat "$CHANGELOG"
+          } > "$CHANGELOG.tmp" && mv "$CHANGELOG.tmp" "$CHANGELOG"
+
+          if ! git diff --quiet -- "$SPEC" "$CONTROL" "$CHANGELOG"; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "$SPEC" "$CONTROL" "$CHANGELOG"
+            git commit -m "chore(release-bot): bump packaging to ${VERSION} [skip ci]"
+            git push origin "HEAD:${DEFAULT_BRANCH}"
+          fi
