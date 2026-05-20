@@ -69,3 +69,19 @@ jobs:
             git commit -m "chore(release-bot): bump packaging to ${VERSION} [skip ci]"
             git push origin "HEAD:${DEFAULT_BRANCH}"
           fi
+
+      - name: Merge develop into master and push
+        if: success()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          TAG_LOWER=$(printf '%s' "${{ github.ref_name }}" | tr '[:upper:]' '[:lower:]')
+          if printf '%s' "$TAG_LOWER" | grep -Eq '(alpha|beta|rc|snapshot|pre)'; then
+            echo "Prerelease tag detected; skipping master merge"
+            exit 0
+          fi
+          git fetch origin master develop
+          git checkout master
+          git merge --no-ff origin/develop -m "chore(release-bot): merge develop into master for release ${{ github.ref_name }}"
+          git push origin master

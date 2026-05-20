@@ -3,10 +3,24 @@ name: Debian Release
 on:
   push:
     tags: [ '*' ]
+  workflow_run:
+    workflows: ["Release Bot Version Bump"]
+    types:
+      - completed
   workflow_dispatch:
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref_name }}
 
 jobs:
   create-release:
+    if: |
+      (github.event_name == 'push' &&
+       (contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') ||
+        contains(github.ref_name, 'rc') || contains(github.ref_name, 'snapshot') ||
+        contains(github.ref_name, 'pre'))) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -14,7 +28,7 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           append_body: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -103,7 +117,7 @@ jobs:
 
       - name: Update changelog version from tag
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${RELEASE_TAG#v}"
           OS_SUFFIX=$(echo "${{ matrix.distro }}" | sed 's/-//')
           sed -i "s/^drove-gateway ([^)]*)/drove-gateway (${VERSION}+${OS_SUFFIX})/" src/debian/changelog
 
@@ -163,7 +177,7 @@ jobs:
       - name: Upload release assets
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           append_body: true
           body: |
             ${{ matrix.os_label }}: published
