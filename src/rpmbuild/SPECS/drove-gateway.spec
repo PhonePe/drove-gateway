@@ -194,8 +194,5 @@ fi
 %config(noreplace) %{_sysconfdir}/nixy/*.conf
 
 %changelog
-* Thu Feb 26 2026 vishnu naini <vishnu.naini@phonepe.com> - 1.0-1
+* Thu Feb 26 2026 vishnu naini <vishnu.naini@phonepe.com> - 2.0-1
 - Initial release with deb/rpm packaging
-- Real-time Drove event stream integration
-- Support for Nginx and HAProxy configuration management
-- Automatic service discovery and health tracking

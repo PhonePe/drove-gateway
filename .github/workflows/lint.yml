@@ -15,10 +15,10 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       
       - name: Set up Go
-        uses: actions/setup-go@v4
+        uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4 # v4
         with:
           go-version: ${{ matrix.go-version }}
 
@@ -28,7 +28,7 @@ jobs:
           go -C src mod verify
       
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v3
+        uses: golangci/golangci-lint-action@55c2c1448f86e01eaae002a5a3a9624417608d84 # v6
         with:
           version: latest
           working-directory: src
@@ -48,14 +48,15 @@ jobs:
           go -C src vet ./...
       
       - name: Check for security issues
-        uses: securego/gosec@master
+        # Pinned to an immutable commit SHA for supply-chain safety.
+        uses: securego/gosec@4a3bd8af174872c778439083ded7adbf3747e770 # v2.26.1
         with:
           args: '-no-fail -fmt json -out ../gosec-report.json ./...'
           working-directory: src
         continue-on-error: true
       
       - name: Upload gosec report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: gosec-report
           path: gosec-report.json
