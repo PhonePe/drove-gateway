@@ -61,10 +61,17 @@ func syncHaproxyServerStateConfigBlocks() error {
 		// dynamic servers afterwards.
 		if errors.Is(stateErr, os.ErrNotExist) {
 			logger.WithField("path", config.HaproxyGlobalServerStateFilePath).Warn("HAProxy server state file not found; drove-managed blocks will be emptied")
+			fmt.Fprintf(os.Stderr, "nixy[haproxy-state-sync]: server state file not found at %s; managed blocks will be emptied\n", config.HaproxyGlobalServerStateFilePath)
 			serversByBackend = map[string][]serverStateEntry{}
 		} else {
 			return fmt.Errorf("failed to parse HAProxy server state file: %w", stateErr)
 		}
+	}
+
+	backendsInStateFile := len(serversByBackend)
+	serversInStateFile := 0
+	for _, entries := range serversByBackend {
+		serversInStateFile += len(entries)
 	}
 
 	newContent, blockCount, err := rewriteServerStateConfigBlocks(string(content), serversByBackend)
@@ -77,6 +84,7 @@ func syncHaproxyServerStateConfigBlocks() error {
 
 	if newContent == string(content) {
 		logger.WithField("path", configPath).Info("Drove-managed HAProxy server state blocks are already up to date")
+		fmt.Fprintf(os.Stdout, "nixy[haproxy-state-sync]: no changes (config=%s blocks=%d backends_in_state_file=%d servers_in_state_file=%d)\n", configPath, blockCount, backendsInStateFile, serversInStateFile)
 		return nil
 	}
 
@@ -88,6 +96,7 @@ func syncHaproxyServerStateConfigBlocks() error {
 		"path":   configPath,
 		"blocks": blockCount,
 	}).Info("Updated drove-managed HAProxy server state blocks")
+	fmt.Fprintf(os.Stdout, "nixy[haproxy-state-sync]: updated managed blocks (config=%s blocks=%d backends_in_state_file=%d servers_in_state_file=%d)\n", configPath, blockCount, backendsInStateFile, serversInStateFile)
 	return nil
 }
 
