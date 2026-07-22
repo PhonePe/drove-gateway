@@ -87,6 +87,10 @@ install -m 0644 src/*.conf %{buildroot}%{_sysconfdir}/nixy/ 2>/dev/null || true
 install -m 0644 README.md %{buildroot}%{_docdir}/%{name}/
 install -m 0644 src/rpmbuild/examples/*.tmpl %{buildroot}%{_docdir}/%{name}/examples/ 2>/dev/null || true
 install -m 0644 src/rpmbuild/examples/nixy.toml %{buildroot}%{_docdir}/%{name}/examples/nixy.toml.example 2>/dev/null || true
+mkdir -p %{buildroot}%{_docdir}/%{name}/examples/haproxy.service.d
+install -m 0644 src/rpmbuild/examples/haproxy.service.d/10-drove-gateway-reconcile.conf %{buildroot}%{_docdir}/%{name}/examples/haproxy.service.d/ 2>/dev/null || true
+mkdir -p %{buildroot}%{_docdir}/%{name}/examples/nginx.service.d
+install -m 0644 src/rpmbuild/examples/nginx.service.d/10-drove-gateway-reconcile.conf %{buildroot}%{_docdir}/%{name}/examples/nginx.service.d/ 2>/dev/null || true
 
 %pre
 # Create nixy user if it doesn't exist (optional: currently runs as root)
@@ -96,6 +100,23 @@ install -m 0644 src/rpmbuild/examples/nixy.toml %{buildroot}%{_docdir}/%{name}/e
 # Ensure service is enabled on first install.
 if [ $1 -eq 1 ] && command -v systemctl >/dev/null 2>&1; then
     systemctl enable drove.gateway.service >/dev/null 2>&1 || true
+fi
+
+# Install systemd drop-ins for the proxy units by copying the example files shipped with the
+# package. Every proxy (re)start/reload then signals Drove Gateway to reconcile, and (for HAProxy)
+# refreshes the drove-managed #DROVE-SERVERS blocks before HAProxy reads its config.
+if [ -d /run/systemd/system ]; then
+    examples_dir="%{_docdir}/%{name}/examples"
+    for unit in haproxy nginx; do
+        src_dropin="${examples_dir}/${unit}.service.d/10-drove-gateway-reconcile.conf"
+        dropin_dir="/etc/systemd/system/${unit}.service.d"
+        dropin_file="$dropin_dir/10-drove-gateway-reconcile.conf"
+        if [ -f "$src_dropin" ]; then
+            mkdir -p "$dropin_dir"
+            install -m 0644 "$src_dropin" "$dropin_file"
+        fi
+    done
+    systemctl daemon-reload >/dev/null 2>&1 || true
 fi
 
 # Create configuration directory if it doesn't exist
@@ -174,6 +195,20 @@ fi
 
 # Clean up configuration on uninstall (not upgrade)
 if [ $1 -eq 0 ]; then
+    # Remove the proxy systemd drop-ins installed by drove-gateway.
+    removed=0
+    for unit in haproxy nginx; do
+        dropin_file="/etc/systemd/system/${unit}.service.d/10-drove-gateway-reconcile.conf"
+        if [ -f "$dropin_file" ]; then
+            rm -f "$dropin_file"
+            rmdir "/etc/systemd/system/${unit}.service.d" 2>/dev/null || true
+            removed=1
+        fi
+    done
+    if [ "$removed" = 1 ] && [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+
     if [ -d %{_sysconfdir}/nixy ]; then
         rm -rf %{_sysconfdir}/nixy
     fi
@@ -185,6 +220,8 @@ fi
 %doc %{_docdir}/%{name}/examples/haproxy.tmpl
 %doc %{_docdir}/%{name}/examples/nginx.tmpl
 %doc %{_docdir}/%{name}/examples/nixy.toml.example
+%doc %{_docdir}/%{name}/examples/haproxy.service.d/10-drove-gateway-reconcile.conf
+%doc %{_docdir}/%{name}/examples/nginx.service.d/10-drove-gateway-reconcile.conf
 
 %{_bindir}/nixy
 %{_unitdir}/drove.gateway.service
