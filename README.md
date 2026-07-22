@@ -92,9 +92,12 @@ The complete behavior of Nixy is governed by `nixy.toml`. Below is the complete 
 | `port_tls_keyfile` | string | `""` | Path to TLS key file if `port_use_tls` is true. |
 | `loglevel` | string | `"info"` | Logging level. Can be `debug`, `info`, `warn`, `error`. |
 | `xproxy` | string | `""` | The `X-Proxy` header value to use. Defaults to the hostname if empty. Can be used in template to add custom headers, identify request routing etc. |
-| `api_timeout` | integer | `...` | Timeout for Drove API calls. |
+| `api_timeout` | integer | `10` | Timeout for Drove API calls. |
 | `dns_resolution_timeout_sec` | integer | `...` | Timeout in seconds for DNS resolution. DNS resolution is need as certain operations in nginx/haproxy api's do not accept hostname's for upstreams |
 | `event_refresh_interval_sec` | integer | `5` | Polling/refresh interval in seconds for Drove controller event streams. |
+| `startup_controller_sync_tries` | integer | `2` | On process startup, how many full fresh-sync attempts Drove Gateway makes before using stale persisted datamanager state for controller-unreachable namespaces. Each attempt uses existing per-controller API timeout behavior. |
+| `state_persistence_enabled` | boolean | `true` | Enables writing last successful reconciliation metadata to disk so restarts can reconcile from cached state if Drove is unavailable. In-memory datamanager state is always maintained. |
+| `state_persistence_dir` | string | `"/var/lib/drove-gateway"` | Directory where Drove Gateway stores persisted datamanager state (`datamanager-state.json`) when disk persistence is enabled. |
 | `proxy_platform` | string | `"nginx"` | Defines the underlying proxy enginbe. Supported: `"nginx"` (default) or `"haproxy"`. |
 | `left_delimiter` | string | `""` | Custom left template delimiter for go template parsing (default is `{{`). |
 | `right_delimiter` | string | `""` | Custom right template delimiter for go template parsing (default is `}}`). |
@@ -129,6 +132,8 @@ The complete behavior of Nixy is governed by `nixy.toml`. Below is the complete 
 | `haproxy_backend_include_routing_tag_suffix`| boolean| `true` | When true, appends the routing tag as a suffix to the generated backend name to ensure namespace separation. |
 | `haproxy_add_server_attributes_string` | string | `...` | Custom runtime proxy string arguments pushed to dynamically instantiated HAProxy servers (since default-server statements are ignored by the runtime API). e.g., `on-marked-down shutdown-sessions`. |
 | `haproxy_add_server_ssl_attributes_string`| string | `""` | Specifically tailored runtime proxy arguments used when a dynamically added server has an `https` port type (e.g., `ssl verify required ca-file ca-certificates.crt`). HAProxy runtime doesn't fully support adding all SSL parameters via runtime so ensure base ciphers are statically defined in your globals section. |
+| `haproxy_manage_global_server_state_file` | boolean | `false` | When true, drove-gateway writes HAProxy's `show servers state` output to the state file after every successful reconcile, and (via `nixy -sync-haproxy-state-config`) pre-populates the `#DROVE-SERVERS-BEGIN`/`#DROVE-SERVERS-END` blocks in `haproxy.cfg` before HAProxy (re)starts so `load-server-state-from-file` can restore dynamically added servers. Mainly useful with `haproxy_reload_disabled = true`. |
+| `haproxy_global_server_state_file_path` | string | `""` | Path to HAProxy's global server state file (e.g. `/var/lib/haproxy/server_state`). Required when `haproxy_manage_global_server_state_file` is enabled. Must match the `server-state-file` directive in `haproxy.cfg`. |
 
 ### Drove Namespaces (`[[namespaces]]`)
 Multiple namespaces can be configured as a sequence/array.
@@ -164,7 +169,105 @@ While Drove Gateway is natively integrated to auto-discover and re-route endpoin
 Regardless of whether NGINX Plus or HAProxy Runtime APIs are enabled, **a full configuration reload is absolutely mandatory whenever a new vhost is added or an existing vhost is deleted**. The dynamic proxy APIs excel at scaling downstream IP pools *within* existing upstream/backend blocks dynamically. However, they lack the capability to provision or destroy the foundational routing rules or the upstream blocks themselves natively—those structural scaffolding changes must be synchronized via an explicit template write and daemon reload.
 
 **State Management & Persistence:**
-While **NGINX Plus** handles its own state persistence by natively managing state files (e.g., in `/var/lib/nginx/state/`) to ensure upstreams previously added via the runtime API will continue to reflect across reloads/restarts, **HAProxy** lacks this native state persistence via its runtime API. To guarantee persistence without causing unnecessary process interruptions, Nixy ensures the `haproxy.cfg` is always updated with the new upstream hosts whenever a pure API-based upstream update occurs. During these upstream-only updates, HAProxy is explicitly *not* reloaded, but writing the updated configuration to disk guarantees that any subsequent HAProxy restart reliably loads the most current backends. Additionally, HAProxy's global `server-state-file` functionality can be considered to persist state across reloads/restarts when config templating/reload is disabled. The `server-state-file` should be written by a `systemd` service trigger for `haproxy.service` when HAProxy is shutting down, so it can use it to securely populate the upstream state when starting back up. Implementing this server-state dumping functionality inherently into Nixy itself is a planned to-do.
+While **NGINX Plus** handles its own state persistence by natively managing state files (e.g., in `/var/lib/nginx/state/`) to ensure upstreams previously added via the runtime API will continue to reflect across reloads/restarts, **HAProxy** has stricter semantics when using `server-state-file`.
+
+For HAProxy, `server-state-file` + `load-server-state-from-file` can only restore state for server objects that already exist in the loaded configuration.
+
+### HAProxy `server-state-file` Limitations
+`server-state-file` is useful but has important limitations in dynamic environments:
+
+* State entries are matched strictly by `be_name` and `srv_name`.
+* HAProxy does not create missing servers from the state file.
+* If a backend exists in config but does not contain matching `server` lines (or `server-template` slots), the corresponding state rows are ignored on startup.
+* Any mismatch in naming scheme (backend/server naming strategy changes) breaks restoration for those entries.
+* In fast-changing clusters, maintaining placeholder entries for every runtime-added server becomes operationally fragile.
+
+### Why Signal-Based Reconciliation Is Better
+Drove Gateway uses a signal-driven restart hook to reconcile from source-of-truth app state after proxy startup:
+
+* `ExecStartPre` sends `SIGUSR1` to `drove.gateway.service`.
+* `ExecStartPost` sends `SIGUSR2` to `drove.gateway.service`.
+* `ExecReload` sends `SIGUSR1` and `SIGUSR2` to `drove.gateway.service` during reload lifecycle.
+* On `SIGUSR2`, Drove Gateway triggers full reconciliation and re-adds dynamic upstreams via runtime APIs.
+
+Benefits over relying on `server-state-file`:
+
+* No strict dependency on backend/server name parity with prior state files.
+* No need to maintain static placeholder server entries just for restoration.
+* Rebuilds runtime state from current Drove topology, not possibly stale restart-time artifacts.
+* Same operational model works across HAProxy and NGINX Plus restart flows.
+
+### Optional: HAProxy `server-state-file` Management with Managed Config Blocks
+For deployments that still want to use HAProxy's native `server-state-file` (for example when `haproxy_reload_disabled = true` and drove-gateway does not render `haproxy.cfg` at all), Drove Gateway can manage both the state file and the `server` entries it depends on.
+
+Enable it with:
+
+```toml
+haproxy_manage_global_server_state_file = true
+haproxy_global_server_state_file_path   = "/var/lib/haproxy/server_state"
+```
+
+How it works:
+
+1. **State file writes:** After every successful `ReconcileAllBackends`, drove-gateway captures HAProxy's `show servers state` output over the runtime API socket and writes it atomically to `haproxy_global_server_state_file_path`. This is the equivalent of `echo "show servers state" | socat stdio unix-connect:<socket> > <stateFile>`.
+2. **Managed config blocks:** Because `load-server-state-from-file` only restores state for servers that already exist in the loaded config, you place special comment-delimited blocks inside each relevant backend in `haproxy.cfg`:
+
+   ```
+   backend be_myapp
+       mode http
+       #DROVE-SERVERS-BEGIN be_myapp
+       #DROVE-SERVERS-END
+   ```
+
+   The backend name after `#DROVE-SERVERS-BEGIN` must match the backend the servers belong to. HAProxy ignores these comment lines, so the config remains valid even when a block is empty.
+3. **Block population before (re)start/reload:** The command `nixy -sync-haproxy-state-config -f /etc/nixy/nixy.toml` reads the server state file and rewrites the lines between each `#DROVE-SERVERS-BEGIN`/`#DROVE-SERVERS-END` pair with matching `server <name> <addr>:<port>` entries. It is wired into the HAProxy systemd unit via `ExecStartPre` and `ExecReload` (see `examples/haproxy.service.d/10-drove-gateway-reconcile.conf`) so the servers exist in config right before HAProxy parses it, allowing `load-server-state-from-file` to succeed. If no state file exists yet (first ever start), the blocks are simply emptied.
+
+Requirements and notes:
+
+* When `haproxy_manage_global_server_state_file` is enabled together with `haproxy_reload_disabled = true`, at least one `#DROVE-SERVERS-BEGIN`/`#DROVE-SERVERS-END` block is **mandatory** in `haproxy.cfg`; drove-gateway refuses to start otherwise.
+* Your `haproxy.cfg` global section must contain `server-state-file <path>` and each backend `load-server-state-from-file global`, with `<path>` matching `haproxy_global_server_state_file_path`.
+* **Reload ordering:** systemd *appends* drop-in `ExecReload=` lines after the base `haproxy.service` reload commands, so the drop-in resets `ExecReload=` (with an empty line) and redeclares the sequence — sync, then HAProxy's own validate + `kill -USR2`, then the reconcile signal — so the config is populated **before** HAProxy re-reads it. The reproduced HAProxy reload commands must match your distro's base unit (the packaged drop-ins use the Debian/RHEL defaults; verify if you override `haproxy.service`).
+* Health endpoint `/v1/health` exposes a `ServerStateFileUpdate` status, and metric `drove_gateway_server_state_file_update_healthy` reflects the last state file write.
+
+### Why Signal-Based Reconciliation Is Still Preferred by Default
+When reloads are enabled, the signal-based reconciliation above is the simpler and more robust default because it rebuilds runtime state from current Drove topology instead of relying on restart-time file parity. Use the managed `server-state-file` approach primarily when reloads are disabled and you need HAProxy to restore dynamic server state on its own.
+
+### DataManager Stale State Handling (Memory + Optional Disk)
+When Drove/controller endpoints are temporarily unreachable, Drove Gateway can still reconcile proxy runtime state (for example after `SIGUSR2`) using the last metadata that previously reconciled successfully.
+
+Why this persistence is needed:
+
+* **NGINX Plus:** Upstream server changes done through the NGINX Plus API are persisted by NGINX Plus itself (state files in NGINX's own lifecycle), so runtime upstream state generally survives proxy restarts.
+* **NGINX OSS:** Drove Gateway always regenerates and reloads config for upstream topology changes, so runtime API persistence is not the primary problem.
+* **HAProxy Runtime API:** Dynamically added/removed servers are not reliably covered by HAProxy `server-state-file` behavior in highly dynamic setups. `server-state-file` restore is strict (`be_name`/`srv_name` parity, pre-existing server objects) and is not a robust source of truth for API-driven server churn.
+* **Gateway startup reality:** On first startup (or node reboot), controller data, DNS, network, or auth dependencies may not be immediately available. Persisted DataManager state lets Drove Gateway continue serving a previously known-good routing view until fresh controller data is reachable.
+
+How it works:
+
+* Whenever the DataManager is refreshed from the controllers, Drove Gateway captures a datamanager state snapshot in memory.
+* By default, the same snapshot is also persisted to disk at:
+    * `/var/lib/drove-gateway/datamanager-state.json`
+* On startup, Drove Gateway first tries to fetch fresh metadata from controllers for `startup_controller_sync_tries` attempts (default `2`).
+* Each attempt uses the existing controller request timeout behavior; after tries are exhausted, stale persisted datamanager state is restored for controller-unreachable namespaces (when enabled).
+
+Config knobs:
+
+* `state_persistence_enabled = true|false`
+    * `true` (default): keep memory snapshot and persist to disk.
+    * `false`: keep memory snapshot only; do not read/write snapshot file.
+* `startup_controller_sync_tries = 2`
+    * Number of startup fresh-sync attempts before stale persisted-state usage is allowed.
+* `state_persistence_dir = "/custom/path"`
+    * Changes where `datamanager-state.json` is stored.
+
+Operational note:
+
+* Drove namespace connectivity/auth configuration still comes from `nixy.toml`; only dynamic runtime metadata (apps, leaders, known vhosts/backends, timestamps) is restored from the datamanager state snapshot.
+
+Reference drop-ins:
+
+* `examples/haproxy.service.d/10-drove-gateway-reconcile.conf`
+* `examples/nginx.service.d/10-drove-gateway-reconcile.conf`
 
 ## Template Variables
 

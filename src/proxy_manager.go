@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os/exec"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ type ProxyManager interface {
 	GetTempFilePattern() string
 	Reconcile(data *RenderingData) error
 	IsRuntimeAPIUpstreamUpdateEnabled() bool
+	IsControlPlaneResponsive() bool
 	UpdateAPIUpdatesHealthStatus(status bool, message string)
 	Reload() error
 }
@@ -56,6 +58,20 @@ func (pmgr *NginxProxyManager) UpdateAPIUpdatesHealthStatus(status bool, message
 
 func (pmgr *NginxProxyManager) IsRuntimeAPIUpstreamUpdateEnabled() bool {
 	return !pmgr.apiManagerDisabled
+}
+
+func (pmgr *NginxProxyManager) IsControlPlaneResponsive() bool {
+	// NGINX Plus runtime API mode: wait until the API socket is reachable.
+	if pmgr.config.Nginxplusapiaddr != "" {
+		conn, err := net.DialTimeout("tcp", pmgr.config.Nginxplusapiaddr, 500*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}
+	// NGINX OSS mode: ensure command binary is available before proceeding.
+	return isCommandResponsive(pmgr.config.NginxCmd)
 }
 
 func (pmgr *NginxProxyManager) Reload() error {
@@ -118,6 +134,27 @@ func (pmgr *HAProxyManager) UpdateAPIUpdatesHealthStatus(status bool, message st
 
 func (pmgr *HAProxyManager) IsRuntimeAPIUpstreamUpdateEnabled() bool {
 	return !pmgr.apiManagerDisabled
+}
+
+func (pmgr *HAProxyManager) IsControlPlaneResponsive() bool {
+	if pmgr.config.HaproxySocketAddr == "" {
+		return false
+	}
+	if IsUnixSocketAddr(pmgr.config.HaproxySocketAddr) {
+		conn, err := net.DialTimeout("unix", pmgr.config.HaproxySocketAddr, 500*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}
+	addr := strings.TrimPrefix(strings.TrimPrefix(pmgr.config.HaproxySocketAddr, "ipv4@"), "ipv6@")
+	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func (pmgr *HAProxyManager) Reload() error {
@@ -186,7 +223,7 @@ func setupGlobalProxyManager() ProxyManager {
 				" Runtime API add server ssl attributes:" + config.HaproxyAddServerSSLAttributesString)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.apiTimeout)*time.Second)
 			defer cancel()
-			mgr, err := NewHaproxyManager(ctx, config.HaproxySocketAddr, config.HaproxyDisableLargeBackendCountOptimisation, config.HaproxyAddServerAttributesString, config.HaproxyAddServerSSLAttributesString)
+			mgr, err := NewHaproxyManager(ctx, config.HaproxySocketAddr, config.HaproxyDisableLargeBackendCountOptimisation, config.HaproxyAddServerAttributesString, config.HaproxyAddServerSSLAttributesString, config.HaproxyManageGlobalServerStateFile, config.HaproxyGlobalServerStateFilePath)
 			if err != nil {
 				logger.WithFields(logrus.Fields{
 					"error": err.Error(),
@@ -221,4 +258,13 @@ func runCommand(head string, args ...string) error {
 		return errors.New(msg)
 	}
 	return nil
+}
+
+func isCommandResponsive(commandLine string) bool {
+	parts := strings.Fields(commandLine)
+	if len(parts) == 0 {
+		return false
+	}
+	_, err := exec.LookPath(parts[0])
+	return err == nil
 }

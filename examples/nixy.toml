@@ -9,6 +9,10 @@ port = "6000"
 # X-Proxy header, defaults to hostname
 xproxy = ""
 
+# Timeout for proxy control-plane responsiveness during restart windows (seconds).
+# If unresponsive longer than this, /v1/health reports ProxyControlPlane unhealthy.
+#proxy_control_plane_timeout_sec = 30
+
 
 # Nginx
 #nginxplusapiaddr="127.0.0.1"
@@ -41,6 +45,14 @@ slowstartupstream = "0s"
 #^stuff like disabling h2 can be done here by adding alpn http/1.1 . Some functionality like no-check, init-addr are not supported for dynamic servers
 #force shutdown-sessions to don't let sessions live for long
 #haproxy_add_server_ssl_attributes_string = "ssl verify required ca-file ca-certificates.crt" #defaults to ssl verify none
+
+# Global server state file management (mainly useful with haproxy_reload_disabled = true).
+# When enabled, drove-gateway writes HAProxy's "show servers state" output to the state file after
+# every successful reconcile, and (via `nixy -sync-haproxy-state-config`, wired into the proxy's
+# systemd ExecStartPre/ExecReload) pre-populates #DROVE-SERVERS-BEGIN/#DROVE-SERVERS-END blocks in
+# haproxy.cfg so load-server-state-from-file can restore dynamically added servers.
+#haproxy_manage_global_server_state_file = false
+#haproxy_global_server_state_file_path = "/var/lib/haproxy/server_state"
 
 # Drove API
 [[namespaces]]
