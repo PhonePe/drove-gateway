@@ -428,13 +428,61 @@ func getTmpl(proxyTemplatePath string) (*template.Template, error) {
 
 func reloadWorker() {
 	go func() {
-		// a ticker channel to limit reloads to drove, 1s is enough for now.
+		// A ticker channel to limit reloads, 1s is enough for now.
+		// Keep at most one pending reconcile trigger locally so we do not drain the queue while
+		// proxy restart is in progress.
 		ticker := time.NewTicker(1 * time.Second)
+		pendingReconcile := false
+		unresponsiveSince := time.Time{}
+		thresholdBreached := false
 		for {
 			select {
 			case <-ticker.C:
-				<-appsConfigUpdateSignalQueue
-				reload()
+				// If proxy restart is in progress, wait until proxy control-plane is reachable before
+				// consuming queued reconcile events. This avoids losing events to failed reconciles.
+				if proxyRestartInProgress.Load() {
+					if GlobalProxyManager == nil || !GlobalProxyManager.IsControlPlaneResponsive() {
+						if unresponsiveSince.IsZero() {
+							unresponsiveSince = time.Now()
+						}
+						unresponsiveFor := time.Since(unresponsiveSince)
+						timeout := time.Duration(config.ProxyControlPlaneTimeoutSec) * time.Second
+						if unresponsiveFor > timeout {
+							msg := fmt.Sprintf("proxy control-plane unresponsive for %s (timeout=%s)", unresponsiveFor.Truncate(time.Second), timeout)
+							updateHealthSection("ProxyControlPlane", false, msg)
+							if !thresholdBreached {
+								Metrics.CountProxyControlPlaneTimeouts.Inc()
+								logger.WithField("timeout", timeout).Error("Proxy control-plane unresponsive beyond configured timeout")
+								thresholdBreached = true
+							}
+						}
+						logger.Debug("Proxy restart in progress and control-plane not responsive yet; deferring reconciliation")
+						continue
+					}
+					proxyRestartInProgress.Store(false)
+					unresponsiveSince = time.Time{}
+					thresholdBreached = false
+					updateHealthSection("ProxyControlPlane", true, "OK")
+					logger.Info("Proxy control-plane is responsive again; resuming reconciliation processing")
+				}
+
+				if !pendingReconcile {
+					select {
+					case <-appsConfigUpdateSignalQueue:
+						pendingReconcile = true
+					default:
+						continue
+					}
+				}
+
+				// SIGUSR1 may arrive between the earlier readiness check and this point.
+				// Preserve the pending reconcile and retry once the proxy is responsive again.
+				if proxyRestartInProgress.Load() {
+					continue
+				}
+
+				_ = reload()
+				pendingReconcile = false
 			}
 		}
 	}()

@@ -11,9 +11,12 @@ const ns = "drove_gateway"
 type DroveGatewayPrometheusMetrics struct {
 	CountFailedReloads                prometheus.Counter
 	CountSuccessfulReloads            prometheus.Counter
+	CountProxyControlPlaneTimeouts    prometheus.Counter
 	HistogramReloadDuration           prometheus.Histogram
 	GaugeResolverHealthy              prometheus.Gauge
 	GaugeUpstreamUpdatesViaAPIHealthy prometheus.Gauge
+	GaugeServerStateFileUpdateHealthy prometheus.Gauge
+	GaugeProxyControlPlaneHealthy     prometheus.Gauge
 	GaugeConfigGenerationHealthy      prometheus.Gauge
 	GaugeTemplateRenderingHealthy     prometheus.Gauge
 
@@ -55,6 +58,13 @@ func setupPrometheusMetrics() {
 			Namespace: ns,
 			Name:      "reloads_successful",
 			Help:      "Total number of successful " + config.ProxyPlatform + " reloads",
+		},
+	)
+	Metrics.CountProxyControlPlaneTimeouts = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Namespace: ns,
+			Name:      "proxy_control_plane_timeout_breaches_total",
+			Help:      "Total number of times proxy control-plane remained unresponsive beyond configured timeout",
 		},
 	)
 	Metrics.HistogramReloadDuration = prometheus.NewHistogram(
@@ -123,6 +133,20 @@ func setupPrometheusMetrics() {
 			Namespace: ns,
 			Name:      "upstream_updates_via_api_healthy",
 			Help:      "1 if upstream updates via API is healthy, 0 otherwise",
+		},
+	)
+	Metrics.GaugeServerStateFileUpdateHealthy = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: ns,
+			Name:      "server_state_file_update_healthy",
+			Help:      "1 if HAProxy global server state file updates are healthy, 0 otherwise",
+		},
+	)
+	Metrics.GaugeProxyControlPlaneHealthy = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: ns,
+			Name:      "proxy_control_plane_healthy",
+			Help:      "1 if proxy control plane is responsive within configured timeout, 0 otherwise",
 		},
 	)
 	Metrics.GaugeAllEndpointsDown = prometheus.NewGaugeVec(
@@ -274,6 +298,7 @@ func setupPrometheusMetrics() {
 
 	prometheus.MustRegister(Metrics.CountFailedReloads)
 	prometheus.MustRegister(Metrics.CountSuccessfulReloads)
+	prometheus.MustRegister(Metrics.CountProxyControlPlaneTimeouts)
 	prometheus.MustRegister(Metrics.HistogramReloadDuration)
 	prometheus.MustRegister(Metrics.CountInvalidSubdomainLabelWarnings)
 	prometheus.MustRegister(Metrics.CountDuplicateSubdomainLabelWarnings)
