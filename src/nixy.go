@@ -417,7 +417,7 @@ func validateConfig() error {
 		}
 		if config.HaproxyManageGlobalServerStateFile {
 			if config.HaproxyGlobalServerStateFilePath == "" {
-				logger.Error("haproxy_manage_global_server_state_file is enabled but haproxy_global_server_state_file_path is not set. Please set the path to the haproxy global server state file")
+				return errors.New("haproxy_manage_global_server_state_file is enabled but haproxy_global_server_state_file_path is not set")
 			}
 			logger.Info("Haproxy will manage global server state file at " + config.HaproxyGlobalServerStateFilePath)
 			// When reloads are disabled, drove-gateway does not render haproxy.cfg, so the operator's
@@ -435,7 +435,7 @@ func validateConfig() error {
 		}
 		if config.HaproxyReloadDisabled {
 			if config.HaproxySocketAddr == "" {
-				logger.Error("haproxy_reload_disabled is enabled but haproxy_socket_addr is not set. Please set the socket address to allow runtime server updates")
+				return errors.New("haproxy_reload_disabled is enabled but haproxy_socket_addr is not set; set the socket address to allow runtime server updates")
 			}
 			if config.HaproxyManageGlobalServerStateFile {
 				logger.Warn("haproxy_reload_disabled and haproxy_manage_global_server_state_file are both enabled. Ensure the systemd ExecStartPre/ExecReload hooks run 'nixy -sync-haproxy-state-config' so drove-managed blocks are populated before HAProxy (re)starts")
@@ -588,7 +588,11 @@ func setupSignalHandlers() {
 				proxyRestartInProgress.Store(true)
 				logger.Warn("Received SIGUSR1: proxy lifecycle transition in progress. Upstreams will be reconciled once the proxy is back up.")
 			case syscall.SIGUSR2:
-				wasRestarting := proxyRestartInProgress.Swap(false)
+				wasRestarting := proxyRestartInProgress.Load()
+				// Keep the gate set until reloadWorker confirms that the proxy control plane
+				// is responsive. SIGUSR2 means the service transition completed, but the
+				// runtime socket/API may not be ready to reconcile yet.
+				proxyRestartInProgress.Store(true)
 				logger.WithField("proxy_restart_in_progress", wasRestarting).Info("Received SIGUSR2: proxy lifecycle transition complete. Triggering full reconciliation.")
 				appliedDataManagerState := applyDataManagerStateForOfflineReconcile()
 				if appliedDataManagerState {

@@ -481,7 +481,10 @@ func reloadWorker() {
 					continue
 				}
 
-				_ = reload()
+				if err := reload(); err != nil {
+					logger.WithField("error", err).Warn("Reconciliation failed; retaining pending trigger for retry")
+					continue
+				}
 				pendingReconcile = false
 			}
 		}
