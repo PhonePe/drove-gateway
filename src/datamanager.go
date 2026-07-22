@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -55,6 +56,16 @@ type DataManager struct {
 	LastReloadTimestamp            time.Time // Timestamp of creation or modification
 	LastUpstreamAPIUpdateTimestamp time.Time
 	StaticData                     StaticConfig
+}
+
+// DataManagerSnapshot is a serializable copy of runtime metadata required to reconcile
+// when the upstream controller is temporarily unreachable.
+type DataManagerSnapshot struct {
+	Namespaces                     map[string]NamespaceData `json:"namespaces"`
+	LastKnownVhosts                Vhosts                   `json:"last_known_vhosts"`
+	LastKnownBackends              map[string]bool          `json:"last_known_backends"`
+	LastReloadTimestamp            time.Time                `json:"last_reload_timestamp"`
+	LastUpstreamAPIUpdateTimestamp time.Time                `json:"last_upstream_api_update_timestamp"`
 }
 
 // NewDataManager creates a new instance of DataManager
@@ -495,4 +506,147 @@ func (dm *DataManager) ReadStaticData() StaticConfig {
 	}).Trace("ReadStaticData successfully")
 
 	return dm.StaticData //returning copy
+}
+
+func (dm *DataManager) ExportSnapshot() DataManagerSnapshot {
+	dm.mu.RLock()
+	defer dm.mu.RUnlock()
+
+	return DataManagerSnapshot{
+		Namespaces:                     cloneNamespaces(dm.namespaces),
+		LastKnownVhosts:                Vhosts{Vhosts: cloneStringBoolMap(dm.LastKnownVhosts.Vhosts)},
+		LastKnownBackends:              cloneStringBoolMap(dm.LastKnownBackends),
+		LastReloadTimestamp:            dm.LastReloadTimestamp,
+		LastUpstreamAPIUpdateTimestamp: dm.LastUpstreamAPIUpdateTimestamp,
+	}
+}
+
+// ImportSnapshot restores last-known runtime metadata for namespaces that still exist in current config.
+// Drove namespace connection/auth details continue to come from nixy.toml.
+func (dm *DataManager) ImportSnapshot(snapshot DataManagerSnapshot) int {
+	return dm.ImportSnapshotForNamespaces(snapshot, nil)
+}
+
+// ImportSnapshotForNamespaces restores metadata only for selected namespaces.
+// If namespaces is nil, all namespaces from the snapshot are considered.
+func (dm *DataManager) ImportSnapshotForNamespaces(snapshot DataManagerSnapshot, namespaces map[string]bool) int {
+	restoredNamespaces, _ := dm.ImportSnapshotForNamespacesDetailed(snapshot, namespaces)
+	return restoredNamespaces
+}
+
+// ImportSnapshotForNamespacesDetailed restores metadata for selected namespaces and also
+// returns the exact namespace names that were restored.
+func (dm *DataManager) ImportSnapshotForNamespacesDetailed(snapshot DataManagerSnapshot, namespaces map[string]bool) (int, []string) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	restoredNamespaces := 0
+	restoredNames := make([]string, 0)
+	for namespace, snapNs := range snapshot.Namespaces {
+		if namespaces != nil && !namespaces[namespace] {
+			continue
+		}
+		current, exists := dm.namespaces[namespace]
+		if !exists {
+			continue
+		}
+
+		current.Leader = snapNs.Leader
+		current.Apps = cloneApps(snapNs.Apps)
+		current.KnownVHosts = Vhosts{Vhosts: cloneStringBoolMap(snapNs.KnownVHosts.Vhosts)}
+		if !snapNs.Timestamp.IsZero() {
+			current.Timestamp = snapNs.Timestamp
+		}
+		dm.namespaces[namespace] = current
+		restoredNamespaces++
+		restoredNames = append(restoredNames, namespace)
+	}
+
+	// Keep global metadata in sync only when importing all namespaces.
+	if namespaces == nil {
+		dm.LastKnownVhosts = Vhosts{Vhosts: cloneStringBoolMap(snapshot.LastKnownVhosts.Vhosts)}
+		dm.LastKnownBackends = cloneStringBoolMap(snapshot.LastKnownBackends)
+		dm.LastReloadTimestamp = snapshot.LastReloadTimestamp
+		dm.LastUpstreamAPIUpdateTimestamp = snapshot.LastUpstreamAPIUpdateTimestamp
+	}
+
+	sort.Strings(restoredNames)
+	return restoredNamespaces, restoredNames
+}
+
+func cloneNamespaces(input map[string]NamespaceData) map[string]NamespaceData {
+	cloned := make(map[string]NamespaceData, len(input))
+	for key, namespaceData := range input {
+		cloned[key] = NamespaceData{
+			Drove:       namespaceData.Drove,
+			Leader:      namespaceData.Leader,
+			Apps:        cloneApps(namespaceData.Apps),
+			KnownVHosts: Vhosts{Vhosts: cloneStringBoolMap(namespaceData.KnownVHosts.Vhosts)},
+			Timestamp:   namespaceData.Timestamp,
+		}
+	}
+	return cloned
+}
+
+func cloneApps(input map[string]App) map[string]App {
+	if input == nil {
+		return nil
+	}
+	cloned := make(map[string]App, len(input))
+	for appID, app := range input {
+		cloned[appID] = App{
+			ID:            app.ID,
+			Vhost:         app.Vhost,
+			Hosts:         cloneHosts(app.Hosts),
+			Tags:          cloneStringStringMap(app.Tags),
+			Groups:        cloneHostGroups(app.Groups),
+			RoutingTagKey: app.RoutingTagKey,
+		}
+	}
+	return cloned
+}
+
+func cloneHostGroups(input map[string]HostGroup) map[string]HostGroup {
+	if input == nil {
+		return nil
+	}
+	cloned := make(map[string]HostGroup, len(input))
+	for groupName, group := range input {
+		cloned[groupName] = HostGroup{
+			Hosts: cloneHosts(group.Hosts),
+			Tags:  cloneStringStringMap(group.Tags),
+		}
+	}
+	return cloned
+}
+
+func cloneHosts(input []Host) []Host {
+	if input == nil {
+		return nil
+	}
+	cloned := make([]Host, len(input))
+	copy(cloned, input)
+	return cloned
+}
+
+func cloneStringStringMap(input map[string]string) map[string]string {
+	if input == nil {
+		return nil
+	}
+	cloned := make(map[string]string, len(input))
+	for key, value := range input {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneStringBoolMap(input map[string]bool) map[string]bool {
+	if input == nil {
+		return nil
+	}
+	cloned := make(map[string]bool, len(input))
+	for key, value := range input {
+		cloned[key] = value
+	}
+	return cloned
 }

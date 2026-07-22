@@ -14,3 +14,5 @@ nginx.tmpl etc/nixy/nginx.tmpl.dpkg-new
 # Examples (documentation)
 debian/examples/*.tmpl usr/share/doc/drove-gateway/examples/
 debian/examples/nixy.toml usr/share/doc/drove-gateway/examples/nixy.toml.example
+debian/examples/haproxy.service.d/10-drove-gateway-reconcile.conf usr/share/doc/drove-gateway/examples/haproxy.service.d/
+debian/examples/nginx.service.d/10-drove-gateway-reconcile.conf usr/share/doc/drove-gateway/examples/nginx.service.d/
