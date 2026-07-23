@@ -66,6 +66,7 @@ install -m 0755 nixy %{buildroot}%{_bindir}/nixy
 
 # Install systemd service file
 install -m 0644 src/rpmbuild/examples/drove.gateway.service %{buildroot}%{_unitdir}/
+install -m 0644 src/rpmbuild/examples/nixy.service %{buildroot}%{_unitdir}/
 
 # Install configuration files
 install -m 0644 src/nixy.toml %{buildroot}%{_sysconfdir}/nixy/nixy.toml.example
@@ -225,6 +226,7 @@ fi
 
 %{_bindir}/nixy
 %{_unitdir}/drove.gateway.service
+%{_unitdir}/nixy.service
 %dir %{_sysconfdir}/nixy
 %config(noreplace) %{_sysconfdir}/nixy/nixy.toml.example
 %config(noreplace) %{_sysconfdir}/nixy/*.tmpl

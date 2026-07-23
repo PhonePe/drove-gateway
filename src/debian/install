@@ -6,6 +6,7 @@ nixy usr/bin/
 
 # Systemd service file staged into debian/examples during build
 debian/examples/drove.gateway.service lib/systemd/system/
+debian/examples/nixy.service lib/systemd/system/
 
 # Configuration and templates
 nixy.toml etc/nixy/nixy.toml.example
