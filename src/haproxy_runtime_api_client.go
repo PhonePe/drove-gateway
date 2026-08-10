@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/renameio"
 	"github.com/sirupsen/logrus"
 
 	runtime_misc "github.com/haproxytech/client-native/v5/misc"
@@ -414,7 +415,7 @@ func (manager *HaproxyManager) addOrUpdateServers(backend string, desiredServerM
 		}
 	}
 	if len(errs) > 0 {
-		return errors.New(fmt.Sprintf("errors in Add/Update servers: %s", strings.Join(errs, "; ")))
+		return fmt.Errorf("errors in Add/Update servers: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }
@@ -440,7 +441,9 @@ func (manager *HaproxyManager) addNewServer(backend, serverName string, host Hos
 
 	}
 
-	if err := manager.client.AddServer(backend, serverName, fmt.Sprintf("%s:%d %s", host.Host, host.Port, attributes_string)); err != nil {
+	serverEndpoint := formatRuntimeServerEndpoint(host.Host, host.Port)
+
+	if err := manager.client.AddServer(backend, serverName, fmt.Sprintf("%s %s", serverEndpoint, attributes_string)); err != nil {
 		srvr, runErr := manager.client.GetServerState(backend, serverName)
 		if runErr == nil {
 			logger.WithFields(logrus.Fields{"backend": backend, "server": serverName, "srvr": srvr}).Info("Server already exists after failed add attempt. Proceeding to update existing server.")
@@ -456,7 +459,7 @@ func (manager *HaproxyManager) addNewServer(backend, serverName string, host Hos
 				logger.WithFields(logrus.Fields{"backend": backend, "server": serverName}).Error("Context timeout waiting to retry add server")
 				break waitAddGroup
 			case <-time.After(500 * time.Millisecond):
-				err = manager.client.AddServer(backend, serverName, fmt.Sprintf("%s:%d %s", host.Host, host.Port, attributes_string))
+				err = manager.client.AddServer(backend, serverName, fmt.Sprintf("%s %s", serverEndpoint, attributes_string))
 				time.Sleep(10 * time.Millisecond)
 				srvr, runErr = manager.client.GetServerState(backend, serverName)
 				if err == nil {
@@ -535,6 +538,14 @@ func (manager *HaproxyManager) updateExistingServer(backend, serverName string, 
 	return nil
 }
 
+func formatRuntimeServerEndpoint(host string, port int32) string {
+	trimmedHost := strings.TrimSpace(host)
+	if strings.HasPrefix(trimmedHost, "[") && strings.HasSuffix(trimmedHost, "]") {
+		trimmedHost = strings.TrimPrefix(strings.TrimSuffix(trimmedHost, "]"), "[")
+	}
+	return net.JoinHostPort(trimmedHost, strconv.Itoa(int(port)))
+}
+
 // Start of custom functions not available in HAProxy runtime client library
 // getServersStateWithBackend calls "show servers state" command and parses the output to get servers grouped by backend name
 
@@ -573,24 +584,15 @@ func (manager *HaproxyManager) writeGlobalServerStateFile() error {
 		output += "\n"
 	}
 
-	// Write atomically via a temp file + rename so HAProxy never reads a partially written file.
-	dir := filepath.Dir(manager.global_server_state_file_path)
-	tmpFile, err := os.CreateTemp(dir, ".server_state.tmp-")
-	if err != nil {
-		return fmt.Errorf("failed to create temp file for global server state in %q: %w", dir, err)
+	fileMode := os.FileMode(0o644)
+	if info, statErr := os.Stat(manager.global_server_state_file_path); statErr == nil {
+		fileMode = info.Mode().Perm()
+	} else if !os.IsNotExist(statErr) {
+		return fmt.Errorf("failed to stat global server state file at %q: %w", manager.global_server_state_file_path, statErr)
 	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
 
-	if _, err := tmpFile.WriteString(output); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("failed to write global server state to temp file: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("failed to close temp global server state file: %w", err)
-	}
-	if err := os.Rename(tmpPath, manager.global_server_state_file_path); err != nil {
-		return fmt.Errorf("failed to move global server state file into place at %q: %w", manager.global_server_state_file_path, err)
+	if err := renameio.WriteFile(manager.global_server_state_file_path, []byte(output), fileMode); err != nil {
+		return fmt.Errorf("failed to atomically write global server state file at %q: %w", manager.global_server_state_file_path, err)
 	}
 
 	logger.WithFields(logrus.Fields{
@@ -619,10 +621,23 @@ func (manager *HaproxyManager) parseRuntimeServersWithBackend(output string) (ma
 	lines := strings.Split(output, "\n")
 	result := make(map[string]runtime_models.RuntimeServers)
 
-	if strings.TrimSpace(lines[0]) != "1" {
-		return nil, fmt.Errorf("unsupported output format version, supporting format version 1")
+	firstDataLine := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		firstDataLine = i
+		break
 	}
-	for _, line := range lines[1:] {
+
+	if firstDataLine == -1 {
+		return nil, errors.New("empty output from show servers state")
+	}
+	if err := validateHaproxyServerStateSchemaVersion(strings.TrimSpace(lines[firstDataLine])); err != nil {
+		return nil, fmt.Errorf("invalid HAProxy runtime server state schema version: %w", err)
+	}
+
+	for _, line := range lines[firstDataLine+1:] {
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "1" {
 			continue
 		}

@@ -17,12 +17,19 @@ xproxy = ""
 # persisted datamanager state for controller-unreachable namespaces.
 #startup_controller_sync_tries = 2
 
+# Delay between startup fresh-sync retry attempts (seconds).
+# Defaults to 1 second when unset or <= 0.
+#startup_controller_sync_retry_delay_sec = 1
+
 # Persist last successfully reconciled metadata for stale-state use during controller outages.
 # In-memory snapshot is always kept; this controls optional disk persistence.
 #state_persistence_enabled = true
 
 # Directory for persisted datamanager state snapshot.
 #state_persistence_dir = "/var/lib/drove-gateway"
+
+# Timeout for disk reads/writes used by datamanager state persistence (seconds).
+#disk_io_timeout_sec = 5
 
 
 # Nginx

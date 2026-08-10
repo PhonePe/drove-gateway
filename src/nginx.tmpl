@@ -40,7 +40,7 @@ http {
     }
     {{if and .LeaderVHost .Leader.Endpoint}}
     upstream {{.LeaderVHost}} {
-        server {{.Leader.Host}}:{{.Leader.Port}}
+        server {{hostport .Leader.Host .Leader.Port}}
     }
     server {
         listen 7000;
@@ -59,7 +59,7 @@ http {
     {{- range $id, $app := .Apps}}
     upstream {{$app.Vhost}} {
         {{- range $app.Hosts}}
-        server {{ .Host }}:{{ .Port }};
+        server {{ hostport .Host .Port }};
         {{- end}}
     }
     server {

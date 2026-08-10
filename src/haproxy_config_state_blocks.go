@@ -2,12 +2,16 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
+	"net"
 	"os"
-	"path/filepath"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
+	"github.com/google/renameio"
 	"github.com/sirupsen/logrus"
 )
 
@@ -25,6 +29,7 @@ import (
 const (
 	serverStateBlockBeginPrefix = "#DROVE-SERVERS-BEGIN"
 	serverStateBlockEndMarker   = "#DROVE-SERVERS-END"
+	haproxyServerStateSchemaV1  = 1
 )
 
 type serverStateEntry struct {
@@ -53,6 +58,10 @@ func syncHaproxyServerStateConfigBlocks() error {
 	if err != nil {
 		return fmt.Errorf("failed to read haproxy_config %q: %w", configPath, err)
 	}
+	contentStr, err := validatedConfigText(content)
+	if err != nil {
+		return fmt.Errorf("invalid haproxy_config %q content: %w", configPath, err)
+	}
 
 	serversByBackend, stateErr := parseServerStateFileByBackend(config.HaproxyGlobalServerStateFilePath)
 	if stateErr != nil {
@@ -74,7 +83,7 @@ func syncHaproxyServerStateConfigBlocks() error {
 		serversInStateFile += len(entries)
 	}
 
-	newContent, blockCount, err := rewriteServerStateConfigBlocks(string(content), serversByBackend)
+	newContent, blockCount, err := rewriteServerStateConfigBlocks(contentStr, serversByBackend)
 	if err != nil {
 		return err
 	}
@@ -82,7 +91,7 @@ func syncHaproxyServerStateConfigBlocks() error {
 		return fmt.Errorf("haproxy_manage_global_server_state_file is enabled but no %s / %s blocks were found in haproxy_config %q", serverStateBlockBeginPrefix, serverStateBlockEndMarker, configPath)
 	}
 
-	if newContent == string(content) {
+	if newContent == contentStr {
 		logger.WithField("path", configPath).Info("Drove-managed HAProxy server state blocks are already up to date")
 		fmt.Fprintf(os.Stdout, "nixy[haproxy-state-sync]: no changes (config=%s blocks=%d backends_in_state_file=%d servers_in_state_file=%d)\n", configPath, blockCount, backendsInStateFile, serversInStateFile)
 		return nil
@@ -130,7 +139,7 @@ func rewriteServerStateConfigBlocks(content string, serversByBackend map[string]
 
 		// Emit the managed server lines for this backend (may be none).
 		for _, srv := range serversByBackend[backend] {
-			out = append(out, fmt.Sprintf("%sserver %s %s:%s", indent, srv.name, srv.addr, srv.port))
+			out = append(out, fmt.Sprintf("%sserver %s %s", indent, srv.name, formatServerEndpoint(srv.addr, srv.port)))
 		}
 
 		// Skip the previous block contents until the matching end marker.
@@ -153,6 +162,18 @@ func rewriteServerStateConfigBlocks(content string, serversByBackend map[string]
 	return strings.Join(out, "\n"), blockCount, nil
 }
 
+// formatServerEndpoint returns a host:port endpoint suitable for HAProxy server lines.
+// IPv6 literals must be bracketed before appending the port.
+func formatServerEndpoint(addr, port string) string {
+	host := strings.TrimSpace(addr)
+	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+		host = "[" + host + "]"
+	} else if strings.Contains(host, ":") && !(strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]")) {
+		host = "[" + host + "]"
+	}
+	return host + ":" + port
+}
+
 // parseServerStateFileByBackend parses a HAProxy "show servers state" formatted file and returns
 // the servers grouped by backend name.
 func parseServerStateFileByBackend(path string) (map[string][]serverStateEntry, error) {
@@ -171,20 +192,30 @@ func parseServerStateFileByBackend(path string) (map[string][]serverStateEntry, 
 	// Default column indexes for server state file format version 1.
 	beNameIdx, srvNameIdx, srvAddrIdx, srvPortIdx := 1, 3, 4, 18
 	headerParsed := false
+	versionValidated := false
 
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 8*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || trimmed == "1" {
-			// Blank line or the leading format-version line.
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine == "" {
+			// Ignore blank lines.
 			continue
 		}
-		if strings.HasPrefix(trimmed, "#") {
+
+		if !versionValidated {
+			if err := validateHaproxyServerStateSchemaVersion(trimmedLine); err != nil {
+				return nil, fmt.Errorf("invalid HAProxy server state file schema version: %w", err)
+			}
+			versionValidated = true
+			continue
+		}
+
+		if strings.HasPrefix(trimmedLine, "#") {
 			// The header comment lists the column names; use it to be resilient to format changes.
 			if !headerParsed {
-				cols := strings.Fields(strings.TrimPrefix(trimmed, "#"))
+				cols := strings.Fields(strings.TrimPrefix(trimmedLine, "#"))
 				idx := make(map[string]int, len(cols))
 				for n, c := range cols {
 					idx[c] = n
@@ -207,12 +238,7 @@ func parseServerStateFileByBackend(path string) (map[string][]serverStateEntry, 
 		}
 
 		fields := strings.Fields(line)
-		maxIdx := srvPortIdx
-		for _, i := range []int{beNameIdx, srvNameIdx, srvAddrIdx} {
-			if i > maxIdx {
-				maxIdx = i
-			}
-		}
+		maxIdx := max(beNameIdx, srvNameIdx, srvAddrIdx, srvPortIdx)
 		if len(fields) <= maxIdx {
 			continue
 		}
@@ -223,17 +249,38 @@ func parseServerStateFileByBackend(path string) (map[string][]serverStateEntry, 
 			continue
 		}
 
+		port := strings.TrimSpace(fields[srvPortIdx])
+		portNumber, portErr := strconv.Atoi(port)
+		if portErr != nil || portNumber < 1 || portNumber > 65535 {
+			// Skip servers without a usable port.
+			continue
+		}
+
 		backend := fields[beNameIdx]
 		result[backend] = append(result[backend], serverStateEntry{
 			name: fields[srvNameIdx],
 			addr: addr,
-			port: fields[srvPortIdx],
+			port: port,
 		})
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
+	if !versionValidated {
+		return nil, errors.New("missing HAProxy server state schema version line")
+	}
 	return result, nil
+}
+
+func validateHaproxyServerStateSchemaVersion(raw string) error {
+	version, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("expected integer schema version, got %q", raw)
+	}
+	if version != haproxyServerStateSchemaV1 {
+		return fmt.Errorf("unsupported schema version %d (supported: %d)", version, haproxyServerStateSchemaV1)
+	}
+	return nil
 }
 
 // haproxyServerStateBlocksPresent reports whether the HAProxy config contains at least one
@@ -258,23 +305,23 @@ func haproxyServerStateBlocksPresent(configPath string) (bool, error) {
 // writeHaproxyConfigAtomic writes the HAProxy config via a temp file + rename in the same directory
 // so HAProxy never reads a partially written config.
 func writeHaproxyConfigAtomic(configPath string, content []byte) error {
-	dir := filepath.Dir(configPath)
-	tmpFile, err := os.CreateTemp(dir, ".haproxy.cfg.tmp-")
+	currentInfo, err := os.Stat(configPath)
 	if err != nil {
-		return fmt.Errorf("failed to create temp file for haproxy config in %q: %w", dir, err)
+		return fmt.Errorf("failed to stat existing haproxy config at %q: %w", configPath, err)
 	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
 
-	if _, err := tmpFile.Write(content); err != nil {
-		tmpFile.Close()
-		return fmt.Errorf("failed to write temp haproxy config: %w", err)
-	}
-	if err := tmpFile.Close(); err != nil {
-		return fmt.Errorf("failed to close temp haproxy config: %w", err)
-	}
-	if err := os.Rename(tmpPath, configPath); err != nil {
-		return fmt.Errorf("failed to move haproxy config into place at %q: %w", configPath, err)
+	if err := renameio.WriteFile(configPath, content, currentInfo.Mode().Perm()); err != nil {
+		return fmt.Errorf("failed to atomically write haproxy config at %q: %w", configPath, err)
 	}
 	return nil
+}
+
+func validatedConfigText(content []byte) (string, error) {
+	if !utf8.Valid(content) {
+		return "", errors.New("not valid UTF-8")
+	}
+	if bytes.IndexByte(content, 0) != -1 {
+		return "", errors.New("contains NUL bytes")
+	}
+	return string(content), nil
 }

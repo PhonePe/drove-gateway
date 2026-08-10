@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"sync"
@@ -513,9 +514,9 @@ func (dm *DataManager) ExportSnapshot() DataManagerSnapshot {
 	defer dm.mu.RUnlock()
 
 	return DataManagerSnapshot{
-		Namespaces:                     cloneNamespaces(dm.namespaces),
-		LastKnownVhosts:                Vhosts{Vhosts: cloneStringBoolMap(dm.LastKnownVhosts.Vhosts)},
-		LastKnownBackends:              cloneStringBoolMap(dm.LastKnownBackends),
+		Namespaces:                     deepClone(dm.namespaces),
+		LastKnownVhosts:                deepClone(dm.LastKnownVhosts),
+		LastKnownBackends:              deepClone(dm.LastKnownBackends),
 		LastReloadTimestamp:            dm.LastReloadTimestamp,
 		LastUpstreamAPIUpdateTimestamp: dm.LastUpstreamAPIUpdateTimestamp,
 	}
@@ -524,25 +525,17 @@ func (dm *DataManager) ExportSnapshot() DataManagerSnapshot {
 // ImportSnapshot restores last-known runtime metadata for namespaces that still exist in current config.
 // Drove namespace connection/auth details continue to come from nixy.toml.
 func (dm *DataManager) ImportSnapshot(snapshot DataManagerSnapshot) int {
-	return dm.ImportSnapshotForNamespaces(snapshot, nil)
+	return len(dm.ImportSnapshotForNamespaces(snapshot, nil))
 }
 
 // ImportSnapshotForNamespaces restores metadata only for selected namespaces.
 // If namespaces is nil, all namespaces from the snapshot are considered.
-func (dm *DataManager) ImportSnapshotForNamespaces(snapshot DataManagerSnapshot, namespaces map[string]bool) int {
-	restoredNamespaces, _ := dm.ImportSnapshotForNamespacesDetailed(snapshot, namespaces)
-	return restoredNamespaces
-}
-
-// ImportSnapshotForNamespacesDetailed restores metadata for selected namespaces and also
-// returns the exact namespace names that were restored.
-func (dm *DataManager) ImportSnapshotForNamespacesDetailed(snapshot DataManagerSnapshot, namespaces map[string]bool) (int, []string) {
+func (dm *DataManager) ImportSnapshotForNamespaces(snapshot DataManagerSnapshot, namespaces map[string]bool) []string {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 
-	restoredNamespaces := 0
 	restoredNames := make([]string, 0)
-	for namespace, snapNs := range snapshot.Namespaces {
+	for namespace, snapshotNamespace := range snapshot.Namespaces {
 		if namespaces != nil && !namespaces[namespace] {
 			continue
 		}
@@ -551,102 +544,40 @@ func (dm *DataManager) ImportSnapshotForNamespacesDetailed(snapshot DataManagerS
 			continue
 		}
 
-		current.Leader = snapNs.Leader
-		current.Apps = cloneApps(snapNs.Apps)
-		current.KnownVHosts = Vhosts{Vhosts: cloneStringBoolMap(snapNs.KnownVHosts.Vhosts)}
-		if !snapNs.Timestamp.IsZero() {
-			current.Timestamp = snapNs.Timestamp
+		current.Leader = snapshotNamespace.Leader
+		current.Apps = deepClone(snapshotNamespace.Apps)
+		current.KnownVHosts = deepClone(snapshotNamespace.KnownVHosts)
+		if !snapshotNamespace.Timestamp.IsZero() {
+			current.Timestamp = snapshotNamespace.Timestamp
 		}
 		dm.namespaces[namespace] = current
-		restoredNamespaces++
 		restoredNames = append(restoredNames, namespace)
 	}
 
 	// Keep global metadata in sync only when importing all namespaces.
 	if namespaces == nil {
-		dm.LastKnownVhosts = Vhosts{Vhosts: cloneStringBoolMap(snapshot.LastKnownVhosts.Vhosts)}
-		dm.LastKnownBackends = cloneStringBoolMap(snapshot.LastKnownBackends)
+		dm.LastKnownVhosts = deepClone(snapshot.LastKnownVhosts)
+		dm.LastKnownBackends = deepClone(snapshot.LastKnownBackends)
 		dm.LastReloadTimestamp = snapshot.LastReloadTimestamp
 		dm.LastUpstreamAPIUpdateTimestamp = snapshot.LastUpstreamAPIUpdateTimestamp
 	}
 
 	sort.Strings(restoredNames)
-	return restoredNamespaces, restoredNames
+	return restoredNames
 }
 
-func cloneNamespaces(input map[string]NamespaceData) map[string]NamespaceData {
-	cloned := make(map[string]NamespaceData, len(input))
-	for key, namespaceData := range input {
-		cloned[key] = NamespaceData{
-			Drove:       namespaceData.Drove,
-			Leader:      namespaceData.Leader,
-			Apps:        cloneApps(namespaceData.Apps),
-			KnownVHosts: Vhosts{Vhosts: cloneStringBoolMap(namespaceData.KnownVHosts.Vhosts)},
-			Timestamp:   namespaceData.Timestamp,
-		}
+func deepClone[T any](src T) T {
+	data, err := json.Marshal(src)
+	if err != nil {
+		logger.WithError(err).Warn("deep clone marshal failed")
+		return src
 	}
-	return cloned
-}
 
-func cloneApps(input map[string]App) map[string]App {
-	if input == nil {
-		return nil
+	var dst T
+	if err := json.Unmarshal(data, &dst); err != nil {
+		logger.WithError(err).Warn("deep clone unmarshal failed")
+		return src
 	}
-	cloned := make(map[string]App, len(input))
-	for appID, app := range input {
-		cloned[appID] = App{
-			ID:            app.ID,
-			Vhost:         app.Vhost,
-			Hosts:         cloneHosts(app.Hosts),
-			Tags:          cloneStringStringMap(app.Tags),
-			Groups:        cloneHostGroups(app.Groups),
-			RoutingTagKey: app.RoutingTagKey,
-		}
-	}
-	return cloned
-}
 
-func cloneHostGroups(input map[string]HostGroup) map[string]HostGroup {
-	if input == nil {
-		return nil
-	}
-	cloned := make(map[string]HostGroup, len(input))
-	for groupName, group := range input {
-		cloned[groupName] = HostGroup{
-			Hosts: cloneHosts(group.Hosts),
-			Tags:  cloneStringStringMap(group.Tags),
-		}
-	}
-	return cloned
-}
-
-func cloneHosts(input []Host) []Host {
-	if input == nil {
-		return nil
-	}
-	cloned := make([]Host, len(input))
-	copy(cloned, input)
-	return cloned
-}
-
-func cloneStringStringMap(input map[string]string) map[string]string {
-	if input == nil {
-		return nil
-	}
-	cloned := make(map[string]string, len(input))
-	for key, value := range input {
-		cloned[key] = value
-	}
-	return cloned
-}
-
-func cloneStringBoolMap(input map[string]bool) map[string]bool {
-	if input == nil {
-		return nil
-	}
-	cloned := make(map[string]bool, len(input))
-	for key, value := range input {
-		cloned[key] = value
-	}
-	return cloned
+	return dst
 }

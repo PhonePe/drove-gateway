@@ -17,6 +17,7 @@ type DroveGatewayPrometheusMetrics struct {
 	GaugeUpstreamUpdatesViaAPIHealthy prometheus.Gauge
 	GaugeServerStateFileUpdateHealthy prometheus.Gauge
 	GaugeProxyControlPlaneHealthy     prometheus.Gauge
+	GaugeDiskIOHealthy                prometheus.Gauge
 	GaugeConfigGenerationHealthy      prometheus.Gauge
 	GaugeTemplateRenderingHealthy     prometheus.Gauge
 
@@ -147,6 +148,13 @@ func setupPrometheusMetrics() {
 			Namespace: ns,
 			Name:      "proxy_control_plane_healthy",
 			Help:      "1 if proxy control plane is responsive within configured timeout, 0 otherwise",
+		},
+	)
+	Metrics.GaugeDiskIOHealthy = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Namespace: ns,
+			Name:      "disk_io_healthy",
+			Help:      "1 if disk reads/writes for state persistence complete within configured timeout, 0 otherwise",
 		},
 	)
 	Metrics.GaugeAllEndpointsDown = prometheus.NewGaugeVec(
@@ -322,6 +330,7 @@ func setupPrometheusMetrics() {
 	prometheus.MustRegister(Metrics.HaproxyReconcileAllBackendsDuration)
 	prometheus.MustRegister(Metrics.NginxPlusReconcileAllBackendsDuration)
 	prometheus.MustRegister(Metrics.TemplateRenderDuration)
+	prometheus.MustRegister(Metrics.GaugeDiskIOHealthy)
 
 }
 

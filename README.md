@@ -96,6 +96,7 @@ The complete behavior of Nixy is governed by `nixy.toml`. Below is the complete 
 | `dns_resolution_timeout_sec` | integer | `...` | Timeout in seconds for DNS resolution. DNS resolution is need as certain operations in nginx/haproxy api's do not accept hostname's for upstreams |
 | `event_refresh_interval_sec` | integer | `5` | Polling/refresh interval in seconds for Drove controller event streams. |
 | `startup_controller_sync_tries` | integer | `2` | On process startup, how many full fresh-sync attempts Drove Gateway makes before using stale persisted datamanager state for controller-unreachable namespaces. Each attempt uses existing per-controller API timeout behavior. |
+| `startup_controller_sync_retry_delay_sec` | integer | `1` | Fixed delay in seconds between startup fresh-sync retry attempts. Values `<= 0` default to `1`. |
 | `state_persistence_enabled` | boolean | `true` | Enables writing last successful reconciliation metadata to disk so restarts can reconcile from cached state if Drove is unavailable. In-memory datamanager state is always maintained. |
 | `state_persistence_dir` | string | `"/var/lib/drove-gateway"` | Directory where Drove Gateway stores persisted datamanager state (`datamanager-state.json`) when disk persistence is enabled. |
 | `proxy_platform` | string | `"nginx"` | Defines the underlying proxy enginbe. Supported: `"nginx"` (default) or `"haproxy"`. |
@@ -209,7 +210,7 @@ haproxy_global_server_state_file_path   = "/var/lib/haproxy/server_state"
 
 How it works:
 
-1. **State file writes:** After every successful `ReconcileAllBackends`, drove-gateway captures HAProxy's `show servers state` output over the runtime API socket and writes it atomically to `haproxy_global_server_state_file_path`. This is the equivalent of `echo "show servers state" | socat stdio unix-connect:<socket> > <stateFile>`.
+1. **State file writes:** After every successful `ReconcileAllBackends`, drove-gateway captures HAProxy's `show servers state` output over the runtime API socket and writes it atomically to `haproxy_global_server_state_file_path`, preserving the destination file permissions when the file already exists. This is the equivalent of `echo "show servers state" | socat stdio unix-connect:<socket> > <stateFile>`.
 2. **Managed config blocks:** Because `load-server-state-from-file` only restores state for servers that already exist in the loaded config, you place special comment-delimited blocks inside each relevant backend in `haproxy.cfg`:
 
    ```
@@ -220,7 +221,7 @@ How it works:
    ```
 
    The backend name after `#DROVE-SERVERS-BEGIN` must match the backend the servers belong to. HAProxy ignores these comment lines, so the config remains valid even when a block is empty.
-3. **Block population before (re)start/reload:** The command `nixy -sync-haproxy-state-config -f /etc/nixy/nixy.toml` reads the server state file and rewrites the lines between each `#DROVE-SERVERS-BEGIN`/`#DROVE-SERVERS-END` pair with matching `server <name> <addr>:<port>` entries. It is wired into the HAProxy systemd unit via `ExecStartPre` and `ExecReload` (see `examples/haproxy.service.d/10-drove-gateway-reconcile.conf`) so the servers exist in config right before HAProxy parses it, allowing `load-server-state-from-file` to succeed. If no state file exists yet (first ever start), the blocks are simply emptied.
+3. **Block population before (re)start/reload:** The command `nixy -sync-haproxy-state-config -f /etc/nixy/nixy.toml` reads the server state file and rewrites the lines between each `#DROVE-SERVERS-BEGIN`/`#DROVE-SERVERS-END` pair with matching `server <name> <addr>:<port>` entries. Entries without a usable address or a valid port are skipped. It is wired into the HAProxy systemd unit via `ExecStartPre` and `ExecReload` (see `examples/haproxy.service.d/10-drove-gateway-reconcile.conf`) so the servers exist in config right before HAProxy parses it, allowing `load-server-state-from-file` to succeed. If no state file exists yet (first ever start), the blocks are simply emptied.
 
 Requirements and notes:
 
@@ -248,6 +249,7 @@ How it works:
 * By default, the same snapshot is also persisted to disk at:
     * `/var/lib/drove-gateway/datamanager-state.json`
 * On startup, Drove Gateway first tries to fetch fresh metadata from controllers for `startup_controller_sync_tries` attempts (default `2`).
+* Startup retry attempts are spaced by `startup_controller_sync_retry_delay_sec` (default `1` second) with fixed delay semantics.
 * Each attempt uses the existing controller request timeout behavior; after tries are exhausted, stale persisted datamanager state is restored for controller-unreachable namespaces (when enabled).
 
 Config knobs:
@@ -257,6 +259,8 @@ Config knobs:
     * `false`: keep memory snapshot only; do not read/write snapshot file.
 * `startup_controller_sync_tries = 2`
     * Number of startup fresh-sync attempts before stale persisted-state usage is allowed.
+* `startup_controller_sync_retry_delay_sec = 1`
+    * Delay between startup fresh-sync attempts before stale persisted-state usage is allowed.
 * `state_persistence_dir = "/custom/path"`
     * Changes where `datamanager-state.json` is stored.
 
@@ -299,6 +303,38 @@ You can iteratively loop over applications directly as `.Apps`:
   # Config proxy routing block corresponding securely to {{`{{$app.Vhost}}`}}
 {{`{{end}}`}}
 ```
+
+### Template Functions
+
+The following functions are available inside all templates:
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `hostport` | `hostport host port` | Returns `host:port` with correct IPv6 bracket notation (e.g. `[2001:db8::1]:8080`). **Use this instead of** `{{ .Host }}:{{ .Port }}` for IPv6-safe configs. |
+| `hasPrefix` | `hasPrefix s prefix` | `strings.HasPrefix` |
+| `hasSuffix` | `hasSuffix s suffix` | `strings.HasSuffix` |
+| `contains` | `contains s substr` | `strings.Contains` |
+| `split` | `split s sep` | `strings.Split` |
+| `join` | `join list sep` | `strings.Join` |
+| `trim` | `trim s cutset` | `strings.Trim` |
+| `replace` | `replace s old new n` | `strings.Replace` |
+| `tolower` | `tolower s` | `strings.ToLower` |
+| `getenv` | `getenv key` | `os.Getenv` |
+| `datetime` | `datetime` | Returns current time (`time.Now`). |
+
+#### IPv6 Compatibility
+
+Templates that build server/upstream addresses **must** use `hostport` instead of direct `{{ .Host }}:{{ .Port }}` concatenation. Direct concatenation produces invalid addresses for IPv6 hosts (e.g. `2001:db8::1:8080` instead of `[2001:db8::1]:8080`).
+
+```gotemplate
+# Correct — works with both IPv4 and IPv6
+server {{ hostport .Host .Port }};
+
+# Incorrect — breaks with IPv6 addresses
+server {{ .Host }}:{{ .Port }};
+```
+
+All bundled templates ship with `hostport`. If you maintain custom templates, update any `{{ .Host }}:{{ .Port }}` patterns to use `{{ hostport .Host .Port }}`.
 
 ## Advanced Configuration Notes & Gotchas
 

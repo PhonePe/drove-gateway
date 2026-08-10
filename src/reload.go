@@ -12,6 +12,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/google/renameio"
 	"github.com/sirupsen/logrus"
 )
 
@@ -282,7 +283,6 @@ func createRenderingData(data *RenderingData) {
 	logger.WithFields(logrus.Fields{
 		"data": data,
 	}).Trace("Rendering data generated")
-	return
 }
 
 func renderConfigFromTemplate(tmpl *template.Template, data *RenderingData, file *os.File) error {
@@ -335,7 +335,20 @@ func writeConf(data *RenderingData) error {
 	logger.WithFields(logrus.Fields{
 		"file": ConfigPath,
 	}).Info("Writing new config")
-	err = os.Rename(tmpFile.Name(), ConfigPath)
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	newConfigContent, err := os.ReadFile(tmpFile.Name())
+	if err != nil {
+		return err
+	}
+	fileMode := os.FileMode(0o644)
+	if info, statErr := os.Stat(ConfigPath); statErr == nil {
+		fileMode = info.Mode().Perm()
+	} else if !os.IsNotExist(statErr) {
+		return statErr
+	}
+	err = renameio.WriteFile(ConfigPath, newConfigContent, fileMode)
 	if err != nil {
 		return err
 	}
@@ -408,6 +421,9 @@ func getTmpl(proxyTemplatePath string) (*template.Template, error) {
 				"tolower":   strings.ToLower,
 				"getenv":    os.Getenv,
 				"datetime":  time.Now,
+				"hostport": func(host string, port any) string {
+					return net.JoinHostPort(host, fmt.Sprint(port))
+				},
 			}).
 			ParseFiles(proxyTemplatePath)
 		if tmplCacheErr != nil {

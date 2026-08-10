@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -92,8 +93,7 @@ func (pmgr *NginxProxyManager) GenerateStableBackendName(app App, groupName stri
 
 // GenerateStableServerName returns a stable server name for the given host (NGINX).
 func (pmgr *NginxProxyManager) GenerateStableServerName(host Host) string {
-	// For NGINX, server name is just host:port (or whatever is needed, adjust as per your conventions)
-	return fmt.Sprintf("%s:%d", host.Host, host.Port)
+	return net.JoinHostPort(host.Host, strconv.Itoa(int(host.Port)))
 }
 
 type HAProxyManager struct {

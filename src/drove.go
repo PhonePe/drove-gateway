@@ -4,16 +4,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	retry "github.com/avast/retry-go/v4"
 	"github.com/sirupsen/logrus"
 )
 
@@ -321,34 +324,60 @@ func waitForFreshDataManagerStateAtStartup() {
 	if tries <= 0 {
 		tries = 2
 	}
+	retryDelay := time.Duration(config.StartupControllerSyncRetryDelaySec) * time.Second
+	if retryDelay < 0 {
+		retryDelay = 0
+	}
 
-	logger.WithField("tries", tries).Info("Attempting to fetch fresh DataManager state from controller(s) before using persisted state")
+	logger.WithFields(logrus.Fields{
+		"tries":                               tries,
+		"retry_delay":                         retryDelay.String(),
+		"stale_fallback":                      true,
+		"stale_fallback_source":               "state_persistence_dir",
+		"stale_fallback_requires_persistence": config.StatePersistenceEnabled == nil || *config.StatePersistenceEnabled,
+	}).Info("Attempting to fetch fresh DataManager state from controller(s) before using persisted state")
 	lastUnsyncedNamespaces := make([]string, 0)
 
-	for attempt := 1; attempt <= tries; attempt++ {
-		syncedNamespaces := tryLoadFreshDataManagerStateFromControllersOnce()
-		unsyncedNamespaces := missingSyncedNamespaces(syncedNamespaces)
-		lastUnsyncedNamespaces = unsyncedNamespaces
-		unavailableNamespaces := unavailableControllerNamespaces()
-		if len(unsyncedNamespaces) == 0 {
-			logger.Info("Fresh DataManager state loaded from controller(s) for all namespaces during startup")
-			return
-		}
-		if attempt < tries {
+	retryErr := retry.Do(
+		func() error {
+			syncedNamespaces := tryLoadFreshDataManagerStateFromControllersOnce()
+			lastUnsyncedNamespaces = missingSyncedNamespaces(syncedNamespaces)
+			if len(lastUnsyncedNamespaces) == 0 {
+				return nil
+			}
+			return errors.New("startup fresh DataManager sync incomplete")
+		},
+		retry.Attempts(uint(tries)),
+		retry.Delay(retryDelay),
+		retry.DelayType(retry.FixedDelay),
+		retry.OnRetry(func(n uint, err error) {
+			unavailableNamespaces := unavailableControllerNamespaces()
 			logger.WithFields(logrus.Fields{
-				"attempt":                attempt,
+				"attempt":                int(n) + 1,
 				"tries":                  tries,
-				"unsynced_namespaces":    unsyncedNamespaces,
-				"unavailable_namespaces": sortedNamespaceNames(unavailableNamespaces),
+				"retry_delay":            retryDelay.String(),
+				"unsynced_namespaces":    lastUnsyncedNamespaces,
+				"unavailable_namespaces": slices.Sorted(maps.Keys(unavailableNamespaces)),
 			}).Warn("Startup fresh DataManager sync incomplete for some namespaces; retrying")
-		}
+		}),
+		retry.LastErrorOnly(true),
+	)
+	if retryErr == nil {
+		logger.Info("Fresh DataManager state loaded from controller(s) for all namespaces during startup")
+		return
 	}
 
 	logger.WithFields(logrus.Fields{
 		"tries":               tries,
+		"retry_delay":         retryDelay.String(),
 		"unsynced_namespaces": lastUnsyncedNamespaces,
-	}).Warn("Unable to load fresh DataManager state from controller(s) within configured startup sync tries; using stale persisted DataManager state for unavailable namespaces")
-	if !restoreDataManagerStateForUnavailableNamespaces() {
+		"stale_fallback":      true,
+	}).Warn("Unable to load fresh DataManager state from controller(s) within configured startup sync tries; falling back to stale on-disk persisted DataManager state for unavailable namespaces")
+	namespaceSet := make(map[string]bool, len(lastUnsyncedNamespaces))
+	for _, ns := range lastUnsyncedNamespaces {
+		namespaceSet[ns] = true
+	}
+	if !restoreDataManagerStateForNamespaces(namespaceSet) {
 		logger.WithField("tries", tries).Warn("Startup stale persisted DataManager state is unavailable for controller-unreachable namespaces")
 	}
 }
@@ -410,15 +439,6 @@ func missingSyncedNamespaces(syncedNamespaces map[string]bool) []string {
 	}
 	sort.Strings(missing)
 	return missing
-}
-
-func sortedNamespaceNames(namespaces map[string]bool) []string {
-	names := make([]string, 0, len(namespaces))
-	for namespace := range namespaces {
-		names = append(names, namespace)
-	}
-	sort.Strings(names)
-	return names
 }
 
 func endpointHealthHandler(healthCheckClient *http.Client, namespace string) {

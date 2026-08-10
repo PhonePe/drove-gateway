@@ -1,5 +1,5 @@
 Name:           drove-gateway
-Version:        2.0
+Version:        2.1
 # Release field: default to 1 for releases, but can be overridden by workflows for snapshots
 # Workflows can pass -D snapshot_release="0.snapshot.branch.hash" at rpmbuild time
 Release:        %{?snapshot_release}%{!?snapshot_release:1}%{?dist}
@@ -233,5 +233,8 @@ fi
 %config(noreplace) %{_sysconfdir}/nixy/*.conf
 
 %changelog
+* Thu Aug 13 2026 vishnu naini <vishnu.naini@phonepe.com> - 2.1-1
+- Bump package and source tarball version to 2.1
+
 * Thu Feb 26 2026 vishnu naini <vishnu.naini@phonepe.com> - 2.0-1
 - Initial release with deb/rpm packaging

@@ -30,7 +30,7 @@ http {
     {{- range $id, $app := .Apps}}
     upstream {{index $app.Hosts 0}} {
         {{- range $app.Tasks}}
-        server {{ .Host }}:{{ index .Ports 0 }};
+        server {{ hostport .Host (index .Ports 0) }};
         {{- end}}
     }
     {{- end}}

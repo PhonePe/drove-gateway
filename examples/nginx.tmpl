@@ -41,7 +41,7 @@ http {
     {{- range $nid, $namespace := .Namespaces}}
     {{if and $namespace.LeaderVHost $namespace.Leader.Endpoint}}
     upstream {{$namespace.LeaderVHost}} {
-        server {{$namespace.Leader.Host}}:{{$namespace.Leader.Port}};
+        server {{hostport $namespace.Leader.Host $namespace.Leader.Port}};
     }
     server {
         listen 7000;
@@ -60,7 +60,7 @@ http {
     {{- range $id, $app := .Apps}}
     upstream {{$app.Vhost}} {
         {{- range $app.Hosts}}
-        server {{ .Host }}:{{ .Port }};
+        server {{ hostport .Host .Port }};
         {{end}}
     }
     server {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -111,7 +112,9 @@ type Config struct {
 	LogLevel                                    string           `json:"-" toml:"loglevel"`
 	DnsResolutionTimeoutSec                     int              `json:"-" toml:"dns_resolution_timeout_sec"`
 	ProxyControlPlaneTimeoutSec                 int              `json:"-" toml:"proxy_control_plane_timeout_sec"`
+	DiskIOTimeoutSec                            int              `json:"-" toml:"disk_io_timeout_sec"`
 	StartupControllerSyncTries                  int              `json:"-" toml:"startup_controller_sync_tries"`
+	StartupControllerSyncRetryDelaySec          int              `json:"-" toml:"startup_controller_sync_retry_delay_sec"`
 	StatePersistenceEnabled                     *bool            `json:"-" toml:"state_persistence_enabled"`
 	StatePersistenceDir                         string           `json:"-" toml:"state_persistence_dir"`
 	apiTimeout                                  int              `json:"-" toml:"api_timeout"`
@@ -147,7 +150,7 @@ type NamespaceStatus struct {
 }
 
 type DataManagerStateStatus struct {
-	UsingStaleDroveState bool
+	UsingFreshDroveState bool
 	Message              string
 	LastUpdated          time.Time
 }
@@ -159,6 +162,7 @@ type Health struct {
 	Template              Status
 	UpstreamUpdatesViaAPI Status
 	ServerStateFileUpdate Status
+	DiskIO                Status
 	ResolverHealth        Status
 	ProxyControlPlane     Status
 	DataManagerState      DataManagerStateStatus
@@ -245,6 +249,10 @@ func newHealth() {
 		Healthy: true,
 		Message: "pending first check",
 	}
+	health.DiskIO = Status{
+		Healthy: true,
+		Message: "pending first disk I/O",
+	}
 	if config.ProxyPlatform == "haproxy" && config.HaproxyManageGlobalServerStateFile {
 		health.ServerStateFileUpdate = Status{
 			Healthy: false,
@@ -257,11 +265,12 @@ func newHealth() {
 		}
 	}
 	health.DataManagerState = DataManagerStateStatus{
-		UsingStaleDroveState: false,
+		UsingFreshDroveState: true,
 		Message:              "pending first data source decision",
 		LastUpdated:          time.Now().UTC(),
 	}
 	Metrics.GaugeProxyControlPlaneHealthy.Set(1.0)
+	Metrics.GaugeDiskIOHealthy.Set(1.0)
 	if ConfigReloadDisabled {
 		health.Config.Message = "Config Reload disabled"
 		health.Config.Healthy = true
@@ -320,8 +329,16 @@ func setupDefaultConfig() {
 		config.ProxyControlPlaneTimeoutSec = 30
 	}
 
+	if config.DiskIOTimeoutSec <= 0 {
+		config.DiskIOTimeoutSec = 5
+	}
+
 	if config.StartupControllerSyncTries <= 0 {
 		config.StartupControllerSyncTries = 2
+	}
+
+	if config.StartupControllerSyncRetryDelaySec <= 0 {
+		config.StartupControllerSyncRetryDelaySec = 1
 	}
 
 	if config.StatePersistenceEnabled == nil {
@@ -489,7 +506,7 @@ func nixyHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// the health is set by the respective workers, we just read it here.
-	if !health.Template.Healthy || !health.Config.Healthy || !health.ResolverHealth.Healthy || !health.UpstreamUpdatesViaAPI.Healthy || !health.ServerStateFileUpdate.Healthy || !health.ProxyControlPlane.Healthy || anyNamespaceDown {
+	if !health.Template.Healthy || !health.Config.Healthy || !health.ResolverHealth.Healthy || !health.UpstreamUpdatesViaAPI.Healthy || !health.ServerStateFileUpdate.Healthy || !health.ProxyControlPlane.Healthy || !health.DiskIO.Healthy || anyNamespaceDown {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 
@@ -546,6 +563,10 @@ func updateHealthSection(section string, status bool, message string) {
 		health.ProxyControlPlane.Healthy = status
 		health.ProxyControlPlane.Message = message
 		Metrics.GaugeProxyControlPlaneHealthy.Set(statusFloat)
+	case "DiskIO":
+		health.DiskIO.Healthy = status
+		health.DiskIO.Message = message
+		Metrics.GaugeDiskIOHealthy.Set(statusFloat)
 	default:
 		return
 	}
@@ -670,6 +691,7 @@ func main() {
 	mux.Handle("/v1/metrics", promhttp.Handler())
 	var s_tls *http.Server
 	var s *http.Server
+	listenAddr := net.JoinHostPort(config.Address, config.Port)
 	if config.PortWithTLS {
 		cfg := &tls.Config{
 			MinVersion:               tls.VersionTLS12,
@@ -680,14 +702,14 @@ func main() {
 			},
 		}
 		s_tls = &http.Server{
-			Addr:         config.Address + ":" + config.Port,
+			Addr:         listenAddr,
 			Handler:      mux,
 			TLSConfig:    cfg,
 			TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler), 0),
 		}
 	} else {
 		s = &http.Server{
-			Addr:    config.Address + ":" + config.Port,
+			Addr:    listenAddr,
 			Handler: mux,
 		}
 	}
@@ -700,10 +722,10 @@ func main() {
 	// forceReload()
 	logger.Info("Address:" + config.Address)
 	if config.PortWithTLS {
-		logger.Info("starting nixy on https://" + config.Address + ":" + config.Port)
+		logger.Info("starting nixy on https://" + listenAddr)
 		err = s_tls.ListenAndServeTLS(config.TLScertFile, config.TLSkeyFile)
 	} else {
-		logger.Info("starting nixy on http://" + config.Address + ":" + config.Port)
+		logger.Info("starting nixy on http://" + listenAddr)
 		err = s.ListenAndServe()
 	}
 	if err != nil {
