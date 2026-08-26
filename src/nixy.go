@@ -493,6 +493,7 @@ func nixyReload(w http.ResponseWriter, r *http.Request) {
 }
 
 func nixyHealth(w http.ResponseWriter, r *http.Request) {
+	health.RLock()
 	anyNamespaceDown := false
 	for _, nsEnpoint := range health.NamespaceEndpoints {
 		allBackendsDownForGivenNS := true
@@ -506,19 +507,24 @@ func nixyHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// the health is set by the respective workers, we just read it here.
-	if !health.Template.Healthy || !health.Config.Healthy || !health.ResolverHealth.Healthy || !health.UpstreamUpdatesViaAPI.Healthy || !health.ServerStateFileUpdate.Healthy || !health.ProxyControlPlane.Healthy || !health.DiskIO.Healthy || anyNamespaceDown {
+	isUnhealthy := !health.Template.Healthy || !health.Config.Healthy || !health.ResolverHealth.Healthy || !health.UpstreamUpdatesViaAPI.Healthy || !health.ServerStateFileUpdate.Healthy || !health.ProxyControlPlane.Healthy || !health.DiskIO.Healthy || anyNamespaceDown
+	b, _ := json.MarshalIndent(&health, "", "  ")
+	health.RUnlock()
+
+	if isUnhealthy {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 
 	w.Header().Add("Content-Type", "application/json; charset=utf-8")
-	b, _ := json.MarshalIndent(&health, "", "  ")
 	w.Write(b)
 	return
 }
 
 func nixyConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Content-Type", "application/json; charset=utf-8")
+	db.mu.RLock()
 	b, _ := json.MarshalIndent(&db, "", "  ")
+	db.mu.RUnlock()
 	w.Write(b)
 	return
 }

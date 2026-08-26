@@ -61,6 +61,19 @@ type CurrSyncPoint struct {
 
 var droveClients map[string]*DroveClient
 
+func getHealthyEndpointForNamespace(namespace string) (string, bool) {
+	health.RLock()
+	defer health.RUnlock()
+
+	for _, es := range health.NamespaceEndpoints[namespace] {
+		if es.Healthy {
+			return es.Endpoint, true
+		}
+	}
+
+	return "", false
+}
+
 func leaderController(endpoint string) *LeaderController {
 	if endpoint == "" {
 		return nil
@@ -100,19 +113,13 @@ func fetchRecentEvents(httpClient *http.Client, syncPoint *CurrSyncPoint, namesp
 		return nil, err
 	}
 
-	var endpoint string
-	for _, es := range health.NamespaceEndpoints[namespace] {
-		if es.Healthy {
-			endpoint = es.Endpoint
-			Metrics.GaugeAllEndpointsDown.WithLabelValues(namespace).Set(0)
-			break
-		}
-	}
-	if endpoint == "" {
+	endpoint, ok := getHealthyEndpointForNamespace(namespace)
+	if !ok {
 		err := errors.New("all endpoints are down")
 		Metrics.GaugeAllEndpointsDown.WithLabelValues(namespace).Set(1)
 		return nil, err
 	}
+	Metrics.GaugeAllEndpointsDown.WithLabelValues(namespace).Set(0)
 
 	// fetch all apps and tasks with a single request.
 	req, err := http.NewRequest("GET", endpoint+"/apis/v1/cluster/events/summary?lastSyncTime="+fmt.Sprint(syncPoint.LastSyncTime), nil)
@@ -151,15 +158,8 @@ func fetchRecentEvents(httpClient *http.Client, syncPoint *CurrSyncPoint, namesp
 }
 
 func refreshLeaderData(namespace string) bool {
-	var endpoint string
-	for _, es := range health.NamespaceEndpoints[namespace] {
-		if es.Namespace == namespace && es.Healthy {
-			endpoint = es.Endpoint
-			Metrics.GaugeAllEndpointsDown.WithLabelValues(namespace).Set(0)
-			break
-		}
-	}
-	if endpoint == "" {
+	endpoint, ok := getHealthyEndpointForNamespace(namespace)
+	if !ok {
 		logger.Error("all endpoints are down")
 		Metrics.GaugeAllEndpointsDown.WithLabelValues(namespace).Set(1)
 		return false
@@ -545,14 +545,8 @@ func setupEndpointHealth() {
 }
 
 func fetchApps(httpClient *http.Client, droveConfig DroveConfig, jsonapps *DroveApps) error {
-	var endpoint string
-	for _, es := range health.NamespaceEndpoints[droveConfig.Name] {
-		if es.Healthy {
-			endpoint = es.Endpoint
-			break
-		}
-	}
-	if endpoint == "" {
+	endpoint, ok := getHealthyEndpointForNamespace(droveConfig.Name)
+	if !ok {
 		err := errors.New("all endpoints are down")
 		return err
 	}

@@ -260,7 +260,7 @@ func (dm *DataManager) ReadApps(namespace string) (map[string]App, error) {
 		"apps":      ns.Apps,
 	}).Trace("ReadApp successfully")
 
-	return ns.Apps, nil //returning copy
+	return deepClone(ns.Apps), nil //returning copy
 }
 
 func (dm *DataManager) UpdateApps(namespace string, apps map[string]App) error {
@@ -316,7 +316,7 @@ func (dm *DataManager) ReadKnownVhosts(namespace string) (Vhosts, error) {
 		"knownVHosts": ns.KnownVHosts,
 	}).Trace("ReadKnownVhosts successfully")
 
-	return ns.KnownVHosts, nil //returning copy
+	return deepClone(ns.KnownVHosts), nil //returning copy
 }
 
 func (dm *DataManager) ReadAllKnownVhosts() Vhosts {
@@ -436,7 +436,7 @@ func (dm *DataManager) ReadLastKnownVhosts() Vhosts {
 		"LastKnownVhosts": dm.LastKnownVhosts,
 	}).Trace("LastKnownVhosts successfully")
 
-	return dm.LastKnownVhosts //returning copy
+	return deepClone(dm.LastKnownVhosts) //returning copy
 }
 
 func (dm *DataManager) UpdateLastKnownVhosts(inLastKnownVhosts Vhosts) error {
@@ -464,7 +464,7 @@ func (dm *DataManager) ReadLastKnownBackends() map[string]bool {
 		"LastKnownBackends": dm.LastKnownBackends,
 	}).Trace("ReadLastKnownBackends successfully")
 
-	return dm.LastKnownBackends //returning copy
+	return deepClone(dm.LastKnownBackends) //returning copy
 }
 
 func (dm *DataManager) UpdateLastKnownBackends(inLastKnownBackends map[string]bool) error {
@@ -491,7 +491,7 @@ func (dm *DataManager) ReadAllNamespace() map[string]NamespaceData {
 		"operation": operation,
 	}).Trace("ReadAllNamespace data successfully")
 
-	return dm.namespaces //returning copy
+	return deepClone(dm.namespaces) //returning copy
 }
 
 // Read retrieves data from a specific namespace
