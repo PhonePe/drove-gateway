@@ -6,15 +6,18 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"regexp"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/gorilla/mux"
-	"github.com/peterbourgon/g2s"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 )
@@ -95,6 +98,8 @@ type Config struct {
 	HaproxyBackendNameSeparator                 string           `json:"-" toml:"haproxy_backend_name_separator"`
 	HaproxyAddServerAttributesString            string           `json:"-" toml:"haproxy_add_server_attributes_string"`
 	HaproxyAddServerSSLAttributesString         string           `json:"-" toml:"haproxy_add_server_ssl_attributes_string"`
+	HaproxyManageGlobalServerStateFile          bool             `json:"-" toml:"haproxy_manage_global_server_state_file"`
+	HaproxyGlobalServerStateFilePath            string           `json:"-" toml:"haproxy_global_server_state_file_path"`
 	LeftDelimiter                               string           `json:"-" toml:"left_delimiter"`
 	RightDelimiter                              string           `json:"-" toml:"right_delimiter"`
 	NginxMaxFailsUpstream                       int              `json:"-" toml:"nginx_max_fails"`
@@ -105,6 +110,12 @@ type Config struct {
 	NginxSlowStartUpstreamCompatibility         *string          `json:"-" toml:"slowstartupstream,omitempty"`
 	LogLevel                                    string           `json:"-" toml:"loglevel"`
 	DnsResolutionTimeoutSec                     int              `json:"-" toml:"dns_resolution_timeout_sec"`
+	ProxyControlPlaneTimeoutSec                 int              `json:"-" toml:"proxy_control_plane_timeout_sec"`
+	DiskIOTimeoutSec                            int              `json:"-" toml:"disk_io_timeout_sec"`
+	StartupControllerSyncTries                  int              `json:"-" toml:"startup_controller_sync_tries"`
+	StartupControllerSyncRetryDelaySec          int              `json:"-" toml:"startup_controller_sync_retry_delay_sec"`
+	StatePersistenceEnabled                     *bool            `json:"-" toml:"state_persistence_enabled"`
+	StatePersistenceDir                         string           `json:"-" toml:"state_persistence_dir"`
 	apiTimeout                                  int              `json:"-" toml:"api_timeout"`
 	LastUpdates                                 Updates
 }
@@ -137,13 +148,23 @@ type NamespaceStatus struct {
 	Message   string
 }
 
+type DataManagerStateStatus struct {
+	UsingFreshDroveState bool
+	Message              string
+	LastUpdated          time.Time
+}
+
 // Health struct
 type Health struct {
 	sync.RWMutex
 	Config                Status
 	Template              Status
 	UpstreamUpdatesViaAPI Status
+	ServerStateFileUpdate Status
+	DiskIO                Status
 	ResolverHealth        Status
+	ProxyControlPlane     Status
+	DataManagerState      DataManagerStateStatus
 	NamespaceHealth       map[string]NamespaceStatus
 	NamespaceEndpoints    map[string][]EndpointStatus
 }
@@ -153,9 +174,7 @@ var version = "master" //set by ldflags
 var date string        //set by ldflags
 var commit string      //set by ldflags
 var config = Config{LeftDelimiter: "{{", RightDelimiter: "}}"}
-var statsd g2s.Statter
 var health Health
-var lastConfig string
 var db DataManager
 var logger = logrus.New()
 
@@ -174,7 +193,7 @@ var GlobalProxyManager ProxyManager
 
 // set log level
 func setloglevel() {
-	logLevel := logrus.InfoLevel
+	var logLevel logrus.Level
 	switch config.LogLevel {
 	case "trace":
 		logLevel = logrus.TraceLevel
@@ -200,8 +219,13 @@ func setupDataManager() {
 		config.NginxMaxFailsUpstream, config.NginxFailTimeoutUpstream, config.NginxSlowStartUpstream,
 		config.HaproxySocketAddr, config.HaproxyAddServerAttributesString, config.HaproxyAddServerSSLAttributesString, config.HaproxyServerNamePrefix, config.HaproxyServerNameHostPortSeparator, config.HaproxyBackendNameSeparator, config.HaproxyBackendIncludeRoutingTagSuffix)
 	for _, nsConfig := range config.DroveNamespaces {
-		db.CreateNamespace(nsConfig.Name, nsConfig.Drove, nsConfig.User, nsConfig.Pass,
-			nsConfig.AccessToken, nsConfig.Realm, nsConfig.RealmSuffix, nsConfig.RoutingTag, nsConfig.LeaderVHost)
+		if err := db.CreateNamespace(nsConfig.Name, nsConfig.Drove, nsConfig.User, nsConfig.Pass,
+			nsConfig.AccessToken, nsConfig.Realm, nsConfig.RealmSuffix, nsConfig.RoutingTag, nsConfig.LeaderVHost); err != nil {
+			logger.WithFields(logrus.Fields{
+				"namespace": nsConfig.Name,
+				"error":     err,
+			}).Fatal("failed to initialize namespace in DataManager")
+		}
 	}
 }
 
@@ -223,6 +247,32 @@ func newHealth() {
 		Healthy: true,
 		Message: "pending first check",
 	}
+	health.ProxyControlPlane = Status{
+		Healthy: true,
+		Message: "pending first check",
+	}
+	health.DiskIO = Status{
+		Healthy: true,
+		Message: "pending first disk I/O",
+	}
+	if config.ProxyPlatform == "haproxy" && config.HaproxyManageGlobalServerStateFile {
+		health.ServerStateFileUpdate = Status{
+			Healthy: false,
+			Message: "pending first check",
+		}
+	} else {
+		health.ServerStateFileUpdate = Status{
+			Healthy: true,
+			Message: "Server state file management disabled",
+		}
+	}
+	health.DataManagerState = DataManagerStateStatus{
+		UsingFreshDroveState: true,
+		Message:              "pending first data source decision",
+		LastUpdated:          time.Now().UTC(),
+	}
+	Metrics.GaugeProxyControlPlaneHealthy.Set(1.0)
+	Metrics.GaugeDiskIOHealthy.Set(1.0)
 	if ConfigReloadDisabled {
 		health.Config.Message = "Config Reload disabled"
 		health.Config.Healthy = true
@@ -277,13 +327,39 @@ func setupDefaultConfig() {
 		config.DnsResolutionTimeoutSec = 2
 	}
 
+	if config.ProxyControlPlaneTimeoutSec <= 0 {
+		config.ProxyControlPlaneTimeoutSec = 30
+	}
+
+	if config.DiskIOTimeoutSec <= 0 {
+		config.DiskIOTimeoutSec = 5
+	}
+
+	if config.StartupControllerSyncTries <= 0 {
+		config.StartupControllerSyncTries = 2
+	}
+
+	if config.StartupControllerSyncRetryDelaySec <= 0 {
+		config.StartupControllerSyncRetryDelaySec = 1
+	}
+
+	if config.StatePersistenceEnabled == nil {
+		enabled := true
+		config.StatePersistenceEnabled = &enabled
+	}
+
+	if config.StatePersistenceDir == "" {
+		config.StatePersistenceDir = "/var/lib/drove-gateway"
+	}
+
 	//default proxyplatform as nginx
 	if config.ProxyPlatform == "" {
 		config.ProxyPlatform = "nginx"
 	}
 
 	//set proxy platform parameters
-	if config.ProxyPlatform == "nginx" {
+	switch config.ProxyPlatform {
+	case "nginx":
 		ConfigPath = config.NginxConfig
 		templatePath = config.NginxTemplate
 		ReloadCmd = config.NginxCmd
@@ -317,15 +393,12 @@ func setupDefaultConfig() {
 			logger.Error("Invalid input to slowstartupstream, defaulting to " + config.NginxSlowStartUpstream)
 		}
 		logger.WithFields(logrus.Fields{"max_fails": config.NginxMaxFailsUpstream, "fail_timeout": config.NginxFailTimeoutUpstream, "slow_start": config.NginxSlowStartUpstream}).Debug("Nginx upstream healthcheck parameters set")
-	} else if config.ProxyPlatform == "haproxy" {
+	case "haproxy":
 		ConfigPath = config.HaproxyConfig
 		templatePath = config.HaproxyTemplate
 		ReloadCmd = config.HaproxyReloadCmd
 		ProgramCmd = config.HaproxyCmd
 		ConfigReloadDisabled = config.HaproxyReloadDisabled
-		if ConfigReloadDisabled {
-			logger.Warn("Haproxy reloads are DISABLED. Unlike in nginx, This is NOT a recommended configuration as haproxy is dependent on config to maintain state across restarts. haproxy's reload from global state file feature should be used and restarts accordingly handled\n")
-		}
 		ProgramCmdConfFileArg = "-f"
 		ProgramCmdConfTestArg = "-c"
 		if config.HaproxyBackendNameSeparator == "" {
@@ -348,6 +421,8 @@ func setupDefaultConfig() {
 			config.HaproxyAddServerSSLAttributesString = "ssl verify none"
 			//E.g ssl verify required ca-file ca-certificates.crt
 		}
+	default:
+		logger.WithField("platform", config.ProxyPlatform).Warn("unknown proxy platform")
 	}
 }
 
@@ -359,11 +434,34 @@ func validateConfig() error {
 	}
 
 	if config.ProxyPlatform == "haproxy" {
-		if (config.HaproxyReloadDisabled) && (config.HaproxySocketAddr == "") {
-			return errors.New("haproxy socket address is mandatory when reloads are disabled, can't update runtime servers")
-		}
 		if config.HaproxyIgnoreCheck {
 			logger.Warn("Haproxy config check is disabled, this may lead to invalid configs being applied")
+		}
+		if config.HaproxyManageGlobalServerStateFile {
+			if config.HaproxyGlobalServerStateFilePath == "" {
+				return errors.New("haproxy_manage_global_server_state_file is enabled but haproxy_global_server_state_file_path is not set")
+			}
+			logger.Info("Haproxy will manage global server state file at " + config.HaproxyGlobalServerStateFilePath)
+			// When reloads are disabled, drove-gateway does not render haproxy.cfg, so the operator's
+			// config must contain drove-managed server blocks that we populate before every (re)start/reload.
+			// Those blocks are mandatory so that load-server-state-from-file has matching server objects.
+			if config.HaproxyReloadDisabled {
+				present, err := haproxyServerStateBlocksPresent(config.HaproxyConfig)
+				if err != nil {
+					return fmt.Errorf("unable to read haproxy_config %q to verify mandatory %s blocks: %w", config.HaproxyConfig, serverStateBlockBeginPrefix, err)
+				}
+				if !present {
+					return fmt.Errorf("haproxy_manage_global_server_state_file is enabled with reloads disabled but no %s / %s blocks were found in haproxy_config %q", serverStateBlockBeginPrefix, serverStateBlockEndMarker, config.HaproxyConfig)
+				}
+			}
+		}
+		if config.HaproxyReloadDisabled {
+			if config.HaproxySocketAddr == "" {
+				return errors.New("haproxy_reload_disabled is enabled but haproxy_socket_addr is not set; set the socket address to allow runtime server updates")
+			}
+			if config.HaproxyManageGlobalServerStateFile {
+				logger.Warn("haproxy_reload_disabled and haproxy_manage_global_server_state_file are both enabled. Ensure the systemd ExecStartPre/ExecReload hooks run 'nixy -sync-haproxy-state-config' so drove-managed blocks are populated before HAProxy (re)starts")
+			}
 		}
 	}
 
@@ -391,15 +489,15 @@ func nixyReload(w http.ResponseWriter, r *http.Request) {
 	}
 	if queued {
 		w.WriteHeader(202)
-		fmt.Fprintln(w, "queued")
+		_, _ = fmt.Fprintln(w, "queued")
 		return
 	}
 	w.WriteHeader(202)
-	fmt.Fprintln(w, "queue is full")
-	return
+	_, _ = fmt.Fprintln(w, "queue is full")
 }
 
 func nixyHealth(w http.ResponseWriter, r *http.Request) {
+	health.RLock()
 	anyNamespaceDown := false
 	for _, nsEnpoint := range health.NamespaceEndpoints {
 		allBackendsDownForGivenNS := true
@@ -413,28 +511,30 @@ func nixyHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// the health is set by the respective workers, we just read it here.
-	if !health.Template.Healthy || !health.Config.Healthy || !health.ResolverHealth.Healthy || !health.UpstreamUpdatesViaAPI.Healthy || anyNamespaceDown {
+	isUnhealthy := !health.Template.Healthy || !health.Config.Healthy || !health.ResolverHealth.Healthy || !health.UpstreamUpdatesViaAPI.Healthy || !health.ServerStateFileUpdate.Healthy || !health.ProxyControlPlane.Healthy || !health.DiskIO.Healthy || anyNamespaceDown
+	b, _ := json.MarshalIndent(&health, "", "  ")
+	health.RUnlock()
+
+	if isUnhealthy {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 
 	w.Header().Add("Content-Type", "application/json; charset=utf-8")
-	b, _ := json.MarshalIndent(&health, "", "  ")
-	w.Write(b)
-	return
+	_, _ = w.Write(b)
 }
 
 func nixyConfig(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Content-Type", "application/json; charset=utf-8")
+	db.mu.RLock()
 	b, _ := json.MarshalIndent(&db, "", "  ")
-	w.Write(b)
-	return
+	db.mu.RUnlock()
+	_, _ = w.Write(b)
 }
 
 func nixyVersion(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintln(w, "version: "+version)
-	fmt.Fprintln(w, "commit: "+commit)
-	fmt.Fprintln(w, "date: "+date)
-	return
+	_, _ = fmt.Fprintln(w, "version: "+version)
+	_, _ = fmt.Fprintln(w, "commit: "+commit)
+	_, _ = fmt.Fprintln(w, "date: "+date)
 }
 
 func updateHealthSection(section string, status bool, message string) {
@@ -462,6 +562,18 @@ func updateHealthSection(section string, status bool, message string) {
 		health.UpstreamUpdatesViaAPI.Healthy = status
 		health.UpstreamUpdatesViaAPI.Message = message
 		Metrics.GaugeUpstreamUpdatesViaAPIHealthy.Set(statusFloat)
+	case "ServerStateFileUpdate":
+		health.ServerStateFileUpdate.Healthy = status
+		health.ServerStateFileUpdate.Message = message
+		Metrics.GaugeServerStateFileUpdateHealthy.Set(statusFloat)
+	case "ProxyControlPlane":
+		health.ProxyControlPlane.Healthy = status
+		health.ProxyControlPlane.Message = message
+		Metrics.GaugeProxyControlPlaneHealthy.Set(statusFloat)
+	case "DiskIO":
+		health.DiskIO.Healthy = status
+		health.DiskIO.Message = message
+		Metrics.GaugeDiskIOHealthy.Set(statusFloat)
 	default:
 		return
 	}
@@ -478,9 +590,60 @@ func (manager *HaproxyManager) Reconcile(data *RenderingData) error {
 	return manager.ReconcileAllBackends(data, config.HaproxyDisableLargeBackendCountOptimisation)
 }
 
+// proxyRestartInProgress tracks whether the managed proxy (HAProxy or NGINX) is currently
+// (re)starting, based on the signals sent by the proxy's systemd drop-in installed alongside
+// Drove Gateway.
+var proxyRestartInProgress atomic.Bool
+
+// setupSignalHandlers wires the OS signals used to coordinate with proxy (re)starts and reloads.
+//
+// The haproxy.service / nginx.service systemd drop-ins shipped with Drove Gateway send:
+//   - SIGUSR1 from ExecStartPre / ExecReload: a proxy lifecycle transition is beginning; its runtime
+//     state (dynamically added upstream servers) may be reset. We record this so the transition can be tracked.
+//   - SIGUSR2 from ExecStartPost / ExecReload: the proxy is up and its runtime API is ready; trigger a full
+//     reconciliation so every dynamically managed server is re-added via the runtime API (HAProxy
+//     runtime API / NGINX Plus HTTP API), or the config is re-rendered and reloaded for plain NGINX.
+//
+// This replaces the older state-file restore script by rebuilding runtime state directly from the
+// apps Drove Gateway already knows about.
+func setupSignalHandlers() {
+	sigCh := make(chan os.Signal, 4)
+	signal.Notify(sigCh, syscall.SIGUSR1, syscall.SIGUSR2)
+	go func() {
+		for sig := range sigCh {
+			switch sig {
+			case syscall.SIGUSR1:
+				proxyRestartInProgress.Store(true)
+				logger.Warn("Received SIGUSR1: proxy lifecycle transition in progress. Upstreams will be reconciled once the proxy is back up.")
+			case syscall.SIGUSR2:
+				wasRestarting := proxyRestartInProgress.Load()
+				// Keep the gate set until reloadWorker confirms that the proxy control plane
+				// is responsive. SIGUSR2 means the service transition completed, but the
+				// runtime socket/API may not be ready to reconcile yet.
+				proxyRestartInProgress.Store(true)
+				logger.WithField("proxy_restart_in_progress", wasRestarting).Info("Received SIGUSR2: proxy lifecycle transition complete. Triggering full reconciliation.")
+				appliedDataManagerState := applyDataManagerStateForOfflineReconcile()
+				if appliedDataManagerState {
+					logger.Info("Applied datamanager state snapshot for offline reconcile")
+				}
+				// Non-blocking enqueue: reload() calls Reconcile, which re-adds all known servers
+				// via the runtime API (or re-renders and reloads the config). If a reconcile is
+				// already queued, this is a no-op.
+				select {
+				case appsConfigUpdateSignalQueue <- true:
+					logger.Debug("Queued full reconciliation after proxy lifecycle signal")
+				default:
+					logger.Debug("Reconciliation already queued; skipping duplicate trigger")
+				}
+			}
+		}
+	}()
+}
+
 func main() {
 	configtoml := flag.String("f", "nixy.toml", "Path to config. (default nixy.toml)")
 	versionflag := flag.Bool("v", false, "prints current nixy version")
+	syncHaproxyStateConfig := flag.Bool("sync-haproxy-state-config", false, "Populate drove-managed server blocks in the HAProxy config from the server state file, then exit. Intended for systemd ExecStartPre/ExecReload.")
 	flag.Parse()
 	if *versionflag {
 		fmt.Printf("version: %s\n", version)
@@ -509,6 +672,17 @@ func main() {
 	}
 
 	setupDefaultConfig()
+	if *syncHaproxyStateConfig {
+		// One-shot mode invoked from systemd ExecStartPre/ExecReload: refresh the drove-managed
+		// server blocks in haproxy.cfg from the server state file so HAProxy can restore dynamic
+		// server state via load-server-state-from-file, then exit without starting the daemon.
+		if err := syncHaproxyServerStateConfigBlocks(); err != nil {
+			logger.WithFields(logrus.Fields{
+				"error": err.Error(),
+			}).Fatal("failed to sync HAProxy server state config blocks")
+		}
+		os.Exit(0)
+	}
 	setupPrometheusMetrics()
 	setupDataManager()
 	GlobalProxyManager = setupGlobalProxyManager()
@@ -524,38 +698,40 @@ func main() {
 	mux.Handle("/v1/metrics", promhttp.Handler())
 	var s_tls *http.Server
 	var s *http.Server
+	listenAddr := net.JoinHostPort(config.Address, config.Port)
 	if config.PortWithTLS {
 		cfg := &tls.Config{
-			MinVersion:               tls.VersionTLS12,
-			CurvePreferences:         []tls.CurveID{tls.CurveP521, tls.CurveP384, tls.CurveP256},
-			PreferServerCipherSuites: true,
+			MinVersion:       tls.VersionTLS12,
+			CurvePreferences: []tls.CurveID{tls.X25519, tls.CurveP256, tls.CurveP384, tls.CurveP521},
 			CipherSuites: []uint16{
 				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
 			},
 		}
 		s_tls = &http.Server{
-			Addr:         config.Address + ":" + config.Port,
+			Addr:         listenAddr,
 			Handler:      mux,
 			TLSConfig:    cfg,
 			TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler), 0),
 		}
 	} else {
 		s = &http.Server{
-			Addr:    config.Address + ":" + config.Port,
+			Addr:    listenAddr,
 			Handler: mux,
 		}
 	}
 	newHealth()
 	setupEndpointHealth()
 	setupPollEvents()
-	reloadWorker() //Reloader
+	waitForFreshDataManagerStateAtStartup()
+	setupSignalHandlers() // handle proxy (re)start signals from the systemd drop-ins
+	reloadWorker()        //Reloader
 	// forceReload()
 	logger.Info("Address:" + config.Address)
 	if config.PortWithTLS {
-		logger.Info("starting nixy on https://" + config.Address + ":" + config.Port)
+		logger.Info("starting nixy on https://" + listenAddr)
 		err = s_tls.ListenAndServeTLS(config.TLScertFile, config.TLSkeyFile)
 	} else {
-		logger.Info("starting nixy on http://" + config.Address + ":" + config.Port)
+		logger.Info("starting nixy on http://" + listenAddr)
 		err = s.ListenAndServe()
 	}
 	if err != nil {

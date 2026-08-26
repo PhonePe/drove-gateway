@@ -1,0 +1,17 @@
+[Unit]
+Description=DEPRECATED: nixy.service migrated to drove.gateway.service
+Documentation=https://github.com/phonepe/drove-gateway
+Requires=drove.gateway.service
+After=drove.gateway.service
+PartOf=drove.gateway.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo "WARNING: nixy.service is deprecated and has migrated to drove.gateway.service. Use systemctl commands with drove.gateway instead." >&2'
+ExecReload=/bin/sh -c 'echo "WARNING: nixy.service is deprecated. Use systemctl reload drove.gateway instead." >&2'
+ExecStop=/bin/sh -c 'echo "WARNING: nixy.service is deprecated. Use systemctl stop drove.gateway instead." >&2'
+
+[Install]
+WantedBy=multi-user.target
+Also=drove.gateway.service

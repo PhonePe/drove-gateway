@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -21,18 +22,21 @@ type HaproxyManager struct {
 	client                           runtime_api.Runtime
 	add_server_attributes_string     string
 	add_server_ssl_attributes_string string
+	socket_addr                      string
+	manage_global_server_state_file  bool
+	global_server_state_file_path    string
 }
 
-func NewHaproxyManager(ctx context.Context, haproxySocketAddr string, disableLargeBackendCountOptimisation bool, addServerAttributesString string, addServerSSLAttributesString string) (*HaproxyManager, error) {
+func NewHaproxyManager(ctx context.Context, haproxySocketAddr string, disableLargeBackendCountOptimisation bool, addServerAttributesString string, addServerSSLAttributesString string, manageGlobalServerStateFile bool, globalServerStateFilePath string) (*HaproxyManager, error) {
 	logger.WithField("haproxy_socket", haproxySocketAddr).Debug("Preparing to connect to HAProxy runtime API")
 
 	if haproxySocketAddr == "" {
-		return nil, errors.New("HAProxy socket address is not configured")
+		return nil, errors.New("haproxy socket address is not configured")
 	}
 
 	if IsUnixSocketAddr(haproxySocketAddr) {
 		if _, err := os.Stat(haproxySocketAddr); os.IsNotExist(err) {
-			return nil, fmt.Errorf("HAProxy socket file does not exist: %s", haproxySocketAddr)
+			return nil, fmt.Errorf("haproxy socket file does not exist: %s", haproxySocketAddr)
 		}
 	}
 
@@ -46,7 +50,14 @@ func NewHaproxyManager(ctx context.Context, haproxySocketAddr string, disableLar
 	}
 
 	logger.Info("Successfully connected to HAProxy runtime API")
-	return &HaproxyManager{client: runtimeClient, add_server_attributes_string: addServerAttributesString, add_server_ssl_attributes_string: addServerSSLAttributesString}, nil
+	return &HaproxyManager{
+		client:                           runtimeClient,
+		add_server_attributes_string:     addServerAttributesString,
+		add_server_ssl_attributes_string: addServerSSLAttributesString,
+		socket_addr:                      haproxySocketAddr,
+		manage_global_server_state_file:  manageGlobalServerStateFile,
+		global_server_state_file_path:    globalServerStateFilePath,
+	}, nil
 }
 
 func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disableLargeBackendCountOptimisation bool) error {
@@ -127,7 +138,7 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 
 	for backend, hosts := range backendsToReconcile {
 
-		currentServersForBackend := []*runtime_models.RuntimeServer{}
+		var currentServersForBackend []*runtime_models.RuntimeServer
 		backendErr := error(nil)
 		// If we have state for this backend from the aggregated call, use it directly.
 		// This avoids making an additional API call per backend.
@@ -184,6 +195,7 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 			reconciledBackends[backend] = true
 		}
 	}
+
 	if len(reconciliationFailedBackends) > 0 || len(reconciledBackends) == 0 {
 		resultLabel = "error"
 		if len(reconciliationFailedBackends) > 0 {
@@ -195,11 +207,22 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 			logger.WithField("reconciled_backends", reconciledBackends).Error("Failed to reconcile any HAProxy backends")
 			GlobalProxyManager.UpdateAPIUpdatesHealthStatus(false, errors.Join(errors.New("failed to reconcile any HAProxy backends"), err).Error())
 		}
-		return errors.Join(errors.New("Reconciliation failed for some or all HAProxy backends"), err)
+		return errors.Join(errors.New("reconciliation failed for some or all HAProxy backends"), err)
 	} else if len(reconciliationFailedBackends) == 0 {
 		resultLabel = "success"
 		logger.Info("Successfully reconciled all HAProxy backends")
 		GlobalProxyManager.UpdateAPIUpdatesHealthStatus(true, "OK")
+		// After a fully successful reconcile, persist the current server state to the configured
+		// global server state file so HAProxy can restore dynamic server state on the next reload/restart.
+		// Equivalent to: echo "show servers state" | socat stdio unix-connect:<socket> > <stateFile>
+		if err := manager.writeGlobalServerStateFile(); err != nil {
+			Metrics.HaproxyAPICallsFailed.WithLabelValues("write_global_server_state_file").Inc()
+			logger.WithField("error", err).Warning("Failed to write HAProxy global server state file")
+			updateHealthSection("ServerStateFileUpdate", false, err.Error())
+		} else if manager.manage_global_server_state_file {
+			Metrics.HaproxyAPICallsSuccessful.WithLabelValues("write_global_server_state_file").Inc()
+			updateHealthSection("ServerStateFileUpdate", true, "OK")
+		}
 	}
 	return nil
 }
@@ -391,7 +414,7 @@ func (manager *HaproxyManager) addOrUpdateServers(backend string, desiredServerM
 		}
 	}
 	if len(errs) > 0 {
-		return errors.New(fmt.Sprintf("errors in Add/Update servers: %s", strings.Join(errs, "; ")))
+		return fmt.Errorf("errors in Add/Update servers: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }
@@ -417,7 +440,9 @@ func (manager *HaproxyManager) addNewServer(backend, serverName string, host Hos
 
 	}
 
-	if err := manager.client.AddServer(backend, serverName, fmt.Sprintf("%s:%d %s", host.Host, host.Port, attributes_string)); err != nil {
+	serverEndpoint := formatRuntimeServerEndpoint(host.Host, host.Port)
+
+	if err := manager.client.AddServer(backend, serverName, fmt.Sprintf("%s %s", serverEndpoint, attributes_string)); err != nil {
 		srvr, runErr := manager.client.GetServerState(backend, serverName)
 		if runErr == nil {
 			logger.WithFields(logrus.Fields{"backend": backend, "server": serverName, "srvr": srvr}).Info("Server already exists after failed add attempt. Proceeding to update existing server.")
@@ -433,7 +458,7 @@ func (manager *HaproxyManager) addNewServer(backend, serverName string, host Hos
 				logger.WithFields(logrus.Fields{"backend": backend, "server": serverName}).Error("Context timeout waiting to retry add server")
 				break waitAddGroup
 			case <-time.After(500 * time.Millisecond):
-				err = manager.client.AddServer(backend, serverName, fmt.Sprintf("%s:%d %s", host.Host, host.Port, attributes_string))
+				err = manager.client.AddServer(backend, serverName, fmt.Sprintf("%s %s", serverEndpoint, attributes_string))
 				time.Sleep(10 * time.Millisecond)
 				srvr, runErr = manager.client.GetServerState(backend, serverName)
 				if err == nil {
@@ -512,6 +537,14 @@ func (manager *HaproxyManager) updateExistingServer(backend, serverName string, 
 	return nil
 }
 
+func formatRuntimeServerEndpoint(host string, port int32) string {
+	trimmedHost := strings.TrimSpace(host)
+	if strings.HasPrefix(trimmedHost, "[") && strings.HasSuffix(trimmedHost, "]") {
+		trimmedHost = strings.TrimPrefix(strings.TrimSuffix(trimmedHost, "]"), "[")
+	}
+	return net.JoinHostPort(trimmedHost, strconv.Itoa(int(port)))
+}
+
 // Start of custom functions not available in HAProxy runtime client library
 // getServersStateWithBackend calls "show servers state" command and parses the output to get servers grouped by backend name
 
@@ -522,6 +555,50 @@ func (manager *HaproxyManager) getServersStateWithBackend() (map[string]runtime_
 		return nil, err
 	}
 	return manager.parseRuntimeServersWithBackend(result)
+}
+
+// writeGlobalServerStateFile fetches the current server state from HAProxy over the runtime API
+// socket and writes it to the configured global server state file. This is the equivalent of:
+//
+//	echo "show servers state" | socat stdio unix-connect:<socket> > <stateFile>
+//
+// where <socket> is manager.socket_addr and <stateFile> is manager.global_server_state_file_path.
+// HAProxy loads this file on the next reload/restart (via the global "server-state-file" directive
+// and "load-server-state-from-file") to preserve dynamic server state applied through the runtime API.
+func (manager *HaproxyManager) writeGlobalServerStateFile() error {
+	if !manager.manage_global_server_state_file {
+		return nil
+	}
+	if manager.global_server_state_file_path == "" {
+		return errors.New("global server state file management is enabled but no file path is configured")
+	}
+
+	output, err := manager.executeWithResponse("show servers state")
+	if err != nil {
+		return fmt.Errorf("failed to get servers state for global server state file: %w", err)
+	}
+
+	// HAProxy expects a trailing newline when parsing the server state file.
+	if !strings.HasSuffix(output, "\n") {
+		output += "\n"
+	}
+
+	fileMode := os.FileMode(0o644)
+	if mode, modeErr := fileModeFromExistingOrDefault(manager.global_server_state_file_path, fileMode); modeErr != nil {
+		return fmt.Errorf("failed to stat global server state file at %q: %w", manager.global_server_state_file_path, modeErr)
+	} else {
+		fileMode = mode
+	}
+
+	if err := writeFileAtomic(manager.global_server_state_file_path, []byte(output), fileMode); err != nil {
+		return fmt.Errorf("failed to atomically write global server state file at %q: %w", manager.global_server_state_file_path, err)
+	}
+
+	logger.WithFields(logrus.Fields{
+		"path":   manager.global_server_state_file_path,
+		"socket": manager.socket_addr,
+	}).Debug("Wrote HAProxy global server state file")
+	return nil
 }
 
 func (manager *HaproxyManager) executeWithResponse(command string) (string, error) {
@@ -543,10 +620,23 @@ func (manager *HaproxyManager) parseRuntimeServersWithBackend(output string) (ma
 	lines := strings.Split(output, "\n")
 	result := make(map[string]runtime_models.RuntimeServers)
 
-	if strings.TrimSpace(lines[0]) != "1" {
-		return nil, fmt.Errorf("unsupported output format version, supporting format version 1")
+	firstDataLine := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		firstDataLine = i
+		break
 	}
-	for _, line := range lines[1:] {
+
+	if firstDataLine == -1 {
+		return nil, errors.New("empty output from show servers state")
+	}
+	if err := validateHaproxyServerStateSchemaVersion(strings.TrimSpace(lines[firstDataLine])); err != nil {
+		return nil, fmt.Errorf("invalid HAProxy runtime server state schema version: %w", err)
+	}
+
+	for _, line := range lines[firstDataLine+1:] {
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "1" {
 			continue
 		}

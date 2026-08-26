@@ -1,3 +1,8 @@
+drove-gateway (2.1) unstable; urgency=medium
+
+  * haproxy: support for global server-state-file management
+
+ -- vishnunaini <vishnu.naini@phonepe.com>  Wed, 22 Jul 2026 17:32:52 +0530
 drove-gateway (2.0) unstable; urgency=medium
 
   * Initial release with deb/rpm packaging.

@@ -14,8 +14,9 @@ global
   log /dev/log local1 notice
   #stats maxconn 40
   node {{ .Xproxy }}
+  # Uncomment to persist and restore runtime server states across reload/restart:
   # server-state-file /var/lib/haproxy/server-state
-  #systemd ExecReload can be used to write and load server state file if using server-template's
+  # NOTE: also enable `load-server-state-from-file global` below.
 
 defaults
   mode http
@@ -65,9 +66,9 @@ backend {{$app.Vhost}}
 
   {{- range $app.Hosts}}
   {{- if eq .PortType "https"}}
-  server {{ $.HaproxyServerNamePrefix }}{{ $.HaproxyServerNameHostPortSeparator }}{{ .Host }}_{{ .Port }} {{ .Host }}:{{ .Port }} {{$.HaproxyAddServerAttributesString}} {{$.HaproxyAddServerSSLAttributesString}}
+  server {{ $.HaproxyServerNamePrefix }}{{ $.HaproxyServerNameHostPortSeparator }}{{ .Host }}_{{ .Port }} {{ hostport .Host .Port }} {{$.HaproxyAddServerAttributesString}} {{$.HaproxyAddServerSSLAttributesString}}
   {{- else if eq .PortType "http"}}
-  server {{ $.HaproxyServerNamePrefix }}{{ $.HaproxyServerNameHostPortSeparator }}{{ .Host }}_{{ .Port }} {{ .Host }}:{{ .Port }} {{$.HaproxyAddServerAttributesString}}
+  server {{ $.HaproxyServerNamePrefix }}{{ $.HaproxyServerNameHostPortSeparator }}{{ .Host }}_{{ .Port }} {{ hostport .Host .Port }} {{$.HaproxyAddServerAttributesString}}
   {{- else if eq .PortType "tcp"}}
   #skipped plain tcp upstream server_{{ .Host }}_{{ .Port }}
   {{- else if eq .PortType "udp"}}

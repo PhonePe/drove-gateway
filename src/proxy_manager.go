@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +21,7 @@ type ProxyManager interface {
 	GetTempFilePattern() string
 	Reconcile(data *RenderingData) error
 	IsRuntimeAPIUpstreamUpdateEnabled() bool
+	IsControlPlaneResponsive() bool
 	UpdateAPIUpdatesHealthStatus(status bool, message string)
 	Reload() error
 }
@@ -58,6 +61,20 @@ func (pmgr *NginxProxyManager) IsRuntimeAPIUpstreamUpdateEnabled() bool {
 	return !pmgr.apiManagerDisabled
 }
 
+func (pmgr *NginxProxyManager) IsControlPlaneResponsive() bool {
+	// NGINX Plus runtime API mode: wait until the API socket is reachable.
+	if pmgr.config.Nginxplusapiaddr != "" {
+		conn, err := net.DialTimeout("tcp", pmgr.config.Nginxplusapiaddr, 500*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}
+	// NGINX OSS mode: ensure command binary is available before proceeding.
+	return isCommandResponsive(pmgr.config.NginxCmd)
+}
+
 func (pmgr *NginxProxyManager) Reload() error {
 	// This is to allow arguments as well. Example "docker exec nginx..."
 	args := strings.Fields(pmgr.config.NginxCmd)
@@ -76,8 +93,7 @@ func (pmgr *NginxProxyManager) GenerateStableBackendName(app App, groupName stri
 
 // GenerateStableServerName returns a stable server name for the given host (NGINX).
 func (pmgr *NginxProxyManager) GenerateStableServerName(host Host) string {
-	// For NGINX, server name is just host:port (or whatever is needed, adjust as per your conventions)
-	return fmt.Sprintf("%s:%d", host.Host, host.Port)
+	return net.JoinHostPort(host.Host, strconv.Itoa(int(host.Port)))
 }
 
 type HAProxyManager struct {
@@ -106,7 +122,9 @@ func (pmgr *HAProxyManager) GetTempFilePattern() string {
 func (pmgr *HAProxyManager) Reconcile(data *RenderingData) error {
 	//if config reload is disabled, only use API to update backends. it is responsibility fo config to maintain state across restarts e.g. with global-server-state-file
 	if !ConfigReloadDisabled {
-		updateProxyConfig(data)
+		if err := updateProxyConfig(data); err != nil {
+			return err
+		}
 	}
 
 	return pmgr.apiManager.ReconcileAllBackends(data, config.HaproxyDisableLargeBackendCountOptimisation)
@@ -118,6 +136,27 @@ func (pmgr *HAProxyManager) UpdateAPIUpdatesHealthStatus(status bool, message st
 
 func (pmgr *HAProxyManager) IsRuntimeAPIUpstreamUpdateEnabled() bool {
 	return !pmgr.apiManagerDisabled
+}
+
+func (pmgr *HAProxyManager) IsControlPlaneResponsive() bool {
+	if pmgr.config.HaproxySocketAddr == "" {
+		return false
+	}
+	if IsUnixSocketAddr(pmgr.config.HaproxySocketAddr) {
+		conn, err := net.DialTimeout("unix", pmgr.config.HaproxySocketAddr, 500*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}
+	addr := strings.TrimPrefix(strings.TrimPrefix(pmgr.config.HaproxySocketAddr, "ipv4@"), "ipv6@")
+	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func (pmgr *HAProxyManager) Reload() error {
@@ -152,7 +191,8 @@ func (pmgr *HAProxyManager) GenerateStableServerName(host Host) string {
 func setupGlobalProxyManager() ProxyManager {
 	var pm ProxyManager
 	// Conditionally initialize runtime API manager at startup
-	if config.ProxyPlatform == "nginx" {
+	switch config.ProxyPlatform {
+	case "nginx":
 		logger.Debug("Platform:" + config.ProxyPlatform)
 
 		if len(config.Nginxplusapiaddr) > 0 {
@@ -176,8 +216,7 @@ func setupGlobalProxyManager() ProxyManager {
 			pm = &NginxProxyManager{config: &config, apiManagerDisabled: true, apiManager: nil}
 			logger.Info("Nginx http api client not initialized at startup as nginx api address is not configured")
 		}
-
-	} else if config.ProxyPlatform == "haproxy" {
+	case "haproxy":
 		logger.Debug("Platform:" + config.ProxyPlatform)
 
 		if len(config.HaproxySocketAddr) > 0 {
@@ -186,7 +225,7 @@ func setupGlobalProxyManager() ProxyManager {
 				" Runtime API add server ssl attributes:" + config.HaproxyAddServerSSLAttributesString)
 			ctx, cancel := context.WithTimeout(context.Background(), time.Duration(config.apiTimeout)*time.Second)
 			defer cancel()
-			mgr, err := NewHaproxyManager(ctx, config.HaproxySocketAddr, config.HaproxyDisableLargeBackendCountOptimisation, config.HaproxyAddServerAttributesString, config.HaproxyAddServerSSLAttributesString)
+			mgr, err := NewHaproxyManager(ctx, config.HaproxySocketAddr, config.HaproxyDisableLargeBackendCountOptimisation, config.HaproxyAddServerAttributesString, config.HaproxyAddServerSSLAttributesString, config.HaproxyManageGlobalServerStateFile, config.HaproxyGlobalServerStateFilePath)
 			if err != nil {
 				logger.WithFields(logrus.Fields{
 					"error": err.Error(),
@@ -199,7 +238,7 @@ func setupGlobalProxyManager() ProxyManager {
 			pm = &HAProxyManager{config: &config, apiManagerDisabled: true, apiManager: nil}
 			logger.Info("Haproxy Runtime API client not initialized at startup as haproxy socket address is not configured")
 		}
-	} else {
+	default:
 		logger.WithFields(logrus.Fields{
 			"platform":            config.ProxyPlatform,
 			"nginx_plus_api_addr": config.Nginxplusapiaddr,
@@ -221,4 +260,13 @@ func runCommand(head string, args ...string) error {
 		return errors.New(msg)
 	}
 	return nil
+}
+
+func isCommandResponsive(commandLine string) bool {
+	parts := strings.Fields(commandLine)
+	if len(parts) == 0 {
+		return false
+	}
+	_, err := exec.LookPath(parts[0])
+	return err == nil
 }

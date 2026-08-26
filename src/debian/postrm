@@ -25,6 +25,24 @@ case "$1" in
         ;;
 esac
 
+# Remove the proxy systemd drop-ins installed by drove-gateway (not on upgrade).
+case "$1" in
+    remove|purge)
+        removed=0
+        for unit in haproxy nginx; do
+            dropin_file="/etc/systemd/system/${unit}.service.d/10-drove-gateway-reconcile.conf"
+            if [ -f "$dropin_file" ]; then
+                rm -f "$dropin_file"
+                rmdir "/etc/systemd/system/${unit}.service.d" 2>/dev/null || true
+                removed=1
+            fi
+        done
+        if [ "$removed" = 1 ] && [ -d /run/systemd/system ]; then
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+
 # Run debhelper-generated code
 #DEBHELPER#
 
