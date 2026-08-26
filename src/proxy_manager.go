@@ -122,7 +122,9 @@ func (pmgr *HAProxyManager) GetTempFilePattern() string {
 func (pmgr *HAProxyManager) Reconcile(data *RenderingData) error {
 	//if config reload is disabled, only use API to update backends. it is responsibility fo config to maintain state across restarts e.g. with global-server-state-file
 	if !ConfigReloadDisabled {
-		updateProxyConfig(data)
+		if err := updateProxyConfig(data); err != nil {
+			return err
+		}
 	}
 
 	return pmgr.apiManager.ReconcileAllBackends(data, config.HaproxyDisableLargeBackendCountOptimisation)

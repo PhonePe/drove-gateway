@@ -192,7 +192,11 @@ func parseServerStateFileByBackend(path string) (map[string][]serverStateEntry, 
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			logger.WithError(closeErr).Warn("failed to close haproxy server state file")
+		}
+	}()
 
 	result := make(map[string][]serverStateEntry)
 
