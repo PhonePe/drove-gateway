@@ -11,9 +11,54 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/renameio"
 	"github.com/sirupsen/logrus"
 )
+
+// writeFileAtomic writes content to a temp file in the same directory and renames it into place.
+// The temp file is removed on error paths.
+func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+
+	tmpPath := tmpFile.Name()
+	defer os.Remove(tmpPath)
+
+	if err := tmpFile.Chmod(mode); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if _, err := tmpFile.Write(content); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Sync(); err != nil {
+		_ = tmpFile.Close()
+		return err
+	}
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("failed to rename temp file %q to %q: %w", tmpPath, path, err)
+	}
+
+	return nil
+}
+
+func fileModeFromExistingOrDefault(path string, defaultMode os.FileMode) (os.FileMode, error) {
+	info, err := os.Stat(path)
+	if err == nil {
+		return info.Mode().Perm(), nil
+	}
+	if os.IsNotExist(err) {
+		return defaultMode, nil
+	}
+	return 0, err
+}
 
 const persistedStateSchemaVersion = 1
 const persistedStateFileName = "datamanager-state.json"
@@ -133,13 +178,11 @@ func persistStateToDiskSync(state PersistedDataManagerState) error {
 	}
 
 	stateFile := getStatePersistenceFilePath()
-	fileMode := os.FileMode(0o644)
-	if info, statErr := os.Stat(stateFile); statErr == nil {
-		fileMode = info.Mode().Perm()
-	} else if !os.IsNotExist(statErr) {
-		return statErr
+	fileMode, modeErr := fileModeFromExistingOrDefault(stateFile, 0o644)
+	if modeErr != nil {
+		return modeErr
 	}
-	if err := renameio.WriteFile(stateFile, payload, fileMode); err != nil {
+	if err := writeFileAtomic(stateFile, payload, fileMode); err != nil {
 		return err
 	}
 	return nil

@@ -11,7 +11,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/google/renameio"
 	"github.com/sirupsen/logrus"
 )
 
@@ -310,7 +309,7 @@ func writeHaproxyConfigAtomic(configPath string, content []byte) error {
 		return fmt.Errorf("failed to stat existing haproxy config at %q: %w", configPath, err)
 	}
 
-	if err := renameio.WriteFile(configPath, content, currentInfo.Mode().Perm()); err != nil {
+	if err := writeFileAtomic(configPath, content, currentInfo.Mode().Perm()); err != nil {
 		return fmt.Errorf("failed to atomically write haproxy config at %q: %w", configPath, err)
 	}
 	return nil

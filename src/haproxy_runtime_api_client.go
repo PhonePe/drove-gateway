@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/renameio"
 	"github.com/sirupsen/logrus"
 
 	runtime_misc "github.com/haproxytech/client-native/v5/misc"
@@ -585,13 +584,13 @@ func (manager *HaproxyManager) writeGlobalServerStateFile() error {
 	}
 
 	fileMode := os.FileMode(0o644)
-	if info, statErr := os.Stat(manager.global_server_state_file_path); statErr == nil {
-		fileMode = info.Mode().Perm()
-	} else if !os.IsNotExist(statErr) {
-		return fmt.Errorf("failed to stat global server state file at %q: %w", manager.global_server_state_file_path, statErr)
+	if mode, modeErr := fileModeFromExistingOrDefault(manager.global_server_state_file_path, fileMode); modeErr != nil {
+		return fmt.Errorf("failed to stat global server state file at %q: %w", manager.global_server_state_file_path, modeErr)
+	} else {
+		fileMode = mode
 	}
 
-	if err := renameio.WriteFile(manager.global_server_state_file_path, []byte(output), fileMode); err != nil {
+	if err := writeFileAtomic(manager.global_server_state_file_path, []byte(output), fileMode); err != nil {
 		return fmt.Errorf("failed to atomically write global server state file at %q: %w", manager.global_server_state_file_path, err)
 	}
 
