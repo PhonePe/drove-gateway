@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -370,13 +369,11 @@ func waitForFreshDataManagerStateAtStartup() {
 		retry.Delay(retryDelay),
 		retry.DelayType(retry.FixedDelay),
 		retry.OnRetry(func(n uint, err error) {
-			unavailableNamespaces := unavailableControllerNamespaces()
 			logger.WithFields(logrus.Fields{
-				"attempt":                int(n) + 1,
-				"tries":                  tries,
-				"retry_delay":            retryDelay.String(),
-				"unsynced_namespaces":    lastUnsyncedNamespaces,
-				"unavailable_namespaces": slices.Sorted(maps.Keys(unavailableNamespaces)),
+				"attempt":             int(n) + 1,
+				"tries":               tries,
+				"retry_delay":         retryDelay.String(),
+				"unsynced_namespaces": lastUnsyncedNamespaces,
 			}).Warn("Startup fresh DataManager sync incomplete for some namespaces; retrying")
 		}),
 		retry.LastErrorOnly(true),
@@ -386,17 +383,16 @@ func waitForFreshDataManagerStateAtStartup() {
 		return
 	}
 
+	unavailableNamespaces := slices.Sorted(slices.Values(lastUnsyncedNamespaces))
+	restored := restoreDataManagerStateForUnavailableNamespaces(lastUnsyncedNamespaces)
 	logger.WithFields(logrus.Fields{
-		"tries":               tries,
-		"retry_delay":         retryDelay.String(),
-		"unsynced_namespaces": lastUnsyncedNamespaces,
-		"stale_fallback":      true,
+		"tries":                  tries,
+		"retry_delay":            retryDelay.String(),
+		"unsynced_namespaces":    lastUnsyncedNamespaces,
+		"unavailable_namespaces": unavailableNamespaces,
+		"stale_fallback":         true,
 	}).Warn("Unable to load fresh DataManager state from controller(s) within configured startup sync tries; falling back to stale on-disk persisted DataManager state for unavailable namespaces")
-	namespaceSet := make(map[string]bool, len(lastUnsyncedNamespaces))
-	for _, ns := range lastUnsyncedNamespaces {
-		namespaceSet[ns] = true
-	}
-	if !restoreDataManagerStateForNamespaces(namespaceSet) {
+	if !restored {
 		logger.WithField("tries", tries).Warn("Startup stale persisted DataManager state is unavailable for controller-unreachable namespaces")
 	}
 }
@@ -446,6 +442,17 @@ func missingSyncedNamespaces(syncedNamespaces map[string]bool) []string {
 	}
 	sort.Strings(missing)
 	return missing
+}
+
+func restoreDataManagerStateForUnavailableNamespaces(namespaces []string) bool {
+	if len(namespaces) == 0 {
+		return false
+	}
+	namespaceSet := make(map[string]bool, len(namespaces))
+	for _, namespace := range namespaces {
+		namespaceSet[namespace] = true
+	}
+	return restoreDataManagerStateForNamespaces(namespaceSet)
 }
 
 func endpointHealthHandler(healthCheckClient *http.Client, namespace string) {
