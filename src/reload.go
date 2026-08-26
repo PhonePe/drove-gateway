@@ -46,12 +46,36 @@ var tmplCache *template.Template
 var tmplCacheErr error
 var tmplCacheOnce sync.Once
 
+func setLastSync(ts time.Time) {
+	config.Lock()
+	config.LastUpdates.LastSync = ts
+	config.Unlock()
+}
+
+func setLastConfigValid(ts time.Time) {
+	config.Lock()
+	config.LastUpdates.LastConfigValid = ts
+	config.Unlock()
+}
+
+func setLastProxyProgramReload(ts time.Time) {
+	config.Lock()
+	config.LastUpdates.LastProxyProgramReload = ts
+	config.Unlock()
+}
+
+func setLastConfigRendered(ts time.Time) {
+	config.Lock()
+	config.LastUpdates.LastConfigRendered = ts
+	config.Unlock()
+}
+
 func reload() error {
 	start := time.Now()
 	var err error
 	data := RenderingData{}
 	createRenderingData(&data)
-	config.LastUpdates.LastSync = time.Now()
+	setLastSync(time.Now())
 
 	if !GlobalProxyManager.IsRuntimeAPIUpstreamUpdateEnabled() {
 		logger.Debug("Runtime API calls to update upstreams are disabled")
@@ -142,7 +166,7 @@ func reload() error {
 
 func updateProxyConfig(data *RenderingData) error {
 	logger.Debug("Updating " + data.ProxyPlatform + " config")
-	config.LastUpdates.LastSync = time.Now()
+	setLastSync(time.Now())
 	err := writeConf(data)
 	if err != nil {
 		logger.WithFields(logrus.Fields{
@@ -151,7 +175,7 @@ func updateProxyConfig(data *RenderingData) error {
 		go Metrics.CountFailedReloads.Inc()
 		return err
 	}
-	config.LastUpdates.LastConfigValid = time.Now()
+	setLastConfigValid(time.Now())
 	return nil
 }
 
@@ -177,7 +201,7 @@ func updateAndReloadConfig(data *RenderingData) error {
 		go func() {
 			Metrics.HistogramReloadDuration.Observe(float64(elapsed) / float64(time.Second))
 		}()
-		config.LastUpdates.LastProxyProgramReload = time.Now()
+		setLastProxyProgramReload(time.Now())
 		if err := db.UpdateLastKnownVhosts(vhosts); err != nil {
 			logger.WithError(err).Warn("Failed to persist last known vhosts after successful reload")
 		}
@@ -302,9 +326,6 @@ func renderConfigFromTemplate(tmpl *template.Template, data *RenderingData, file
 }
 
 func writeConf(data *RenderingData) error {
-	config.RLock()
-	defer config.RUnlock()
-
 	template, err := getTmpl(templatePath)
 	if err != nil {
 		return err
@@ -319,7 +340,7 @@ func writeConf(data *RenderingData) error {
 		err = tmpFile.Close()
 		if err != nil {
 			logger.WithFields(logrus.Fields{
-				"file": tmpFile.Name(),
+				"file":  tmpFile.Name(),
 				"error": err,
 			}).Warning("Failed to close temporary file")
 		}
@@ -328,7 +349,7 @@ func writeConf(data *RenderingData) error {
 		err = os.Remove(tmpFile.Name())
 		if err != nil {
 			logger.WithFields(logrus.Fields{
-				"file": tmpFile.Name(),
+				"file":  tmpFile.Name(),
 				"error": err,
 			}).Warning("Failed to remove temporary file")
 		}
@@ -339,7 +360,7 @@ func writeConf(data *RenderingData) error {
 		updateHealthSection("Config", false, err.Error())
 		return err
 	}
-	config.LastUpdates.LastConfigRendered = time.Now()
+	setLastConfigRendered(time.Now())
 	err = GlobalProxyManager.CheckConfig(tmpFile.Name())
 	if err != nil {
 		updateHealthSection("Config", false, err.Error())

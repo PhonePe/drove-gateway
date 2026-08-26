@@ -59,6 +59,7 @@ type CurrSyncPoint struct {
 }
 
 var droveClients map[string]*DroveClient
+var droveClientsMu sync.RWMutex
 
 func getHealthyEndpointForNamespace(namespace string) (string, bool) {
 	health.RLock()
@@ -285,9 +286,17 @@ func pollingHandler(droveClient *DroveClient, appsConfigUpdateChannel chan<- boo
 }
 func pollingEvents() {
 	var waitGroup sync.WaitGroup
-	appsConfigUpdateChannel := make(chan bool, len(droveClients))
 
+	droveClientsMu.RLock()
+	clients := make([]*DroveClient, 0, len(droveClients))
 	for _, droveClient := range droveClients {
+		clients = append(clients, droveClient)
+	}
+	droveClientsMu.RUnlock()
+
+	appsConfigUpdateChannel := make(chan bool, len(clients))
+
+	for _, droveClient := range clients {
 		waitGroup.Add(1)
 		go pollingHandler(droveClient, appsConfigUpdateChannel, &waitGroup)
 	}
@@ -332,6 +341,9 @@ func schedulePollDroveEvents() {
 }
 
 func setupPollEvents() {
+	droveClientsMu.Lock()
+	defer droveClientsMu.Unlock()
+
 	droveClients = make(map[string]*DroveClient)
 	for _, nsConfig := range config.DroveNamespaces {
 		droveClients[nsConfig.Name] = newDroveClient(nsConfig.Name)
@@ -409,7 +421,9 @@ func tryLoadFreshDataManagerStateFromControllersOnce() map[string]bool {
 		namespace := nsConfig.Name
 		endpointHealthHandler(healthCheckClient, namespace)
 
+		droveClientsMu.RLock()
 		droveClient, ok := droveClients[namespace]
+		droveClientsMu.RUnlock()
 		if !ok {
 			continue
 		}
