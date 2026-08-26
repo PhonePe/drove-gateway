@@ -212,6 +212,26 @@ func newDroveClient(name string) *DroveClient {
 	}
 }
 
+func newHealthCheckClient() *http.Client {
+	return &http.Client{
+		Timeout:   time.Duration(config.apiTimeout) * time.Second,
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func rememberDataManagerStateAndQueueReconcile(source string) {
+	rememberDataManagerState()
+	select {
+	case appsConfigUpdateSignalQueue <- true:
+		logger.WithField("source", source).Debug("Queued reconciliation after DataManager refresh")
+	default:
+		logger.WithField("source", source).Debug("Reconciliation already queued after DataManager refresh")
+	}
+}
+
 func pollingHandler(droveClient *DroveClient, appsConfigUpdateChannel chan<- bool, waitGroup *sync.WaitGroup) {
 	defer waitGroup.Done()
 	appsRefreshed := false
@@ -289,8 +309,7 @@ func pollingEvents() {
 		// The DataManager was just refreshed with fresh data from the controllers.
 		// Capture the datamanager state snapshot here so it always reflects controller state
 		// and is not tied to whether the subsequent proxy reload/reconcile succeeds.
-		rememberDataManagerState()
-		appsConfigUpdateSignalQueue <- true
+		rememberDataManagerStateAndQueueReconcile("polling")
 	}
 
 }
@@ -383,13 +402,7 @@ func waitForFreshDataManagerStateAtStartup() {
 }
 
 func tryLoadFreshDataManagerStateFromControllersOnce() map[string]bool {
-	healthCheckClient := &http.Client{
-		Timeout:   time.Duration(config.apiTimeout) * time.Second,
-		Transport: tr,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	healthCheckClient := newHealthCheckClient()
 
 	dataManagerUpdated := false
 	syncedNamespaces := make(map[string]bool, len(config.DroveNamespaces))
@@ -418,13 +431,7 @@ func tryLoadFreshDataManagerStateFromControllersOnce() map[string]bool {
 	}
 
 	if dataManagerUpdated {
-		rememberDataManagerState()
-		select {
-		case appsConfigUpdateSignalQueue <- true:
-			logger.Debug("Queued reconciliation after startup DataManager refresh")
-		default:
-			logger.Debug("Reconciliation already queued after startup DataManager refresh")
-		}
+		rememberDataManagerStateAndQueueReconcile("startup")
 	}
 
 	return syncedNamespaces
@@ -522,13 +529,7 @@ func endpointHealthHandler(healthCheckClient *http.Client, namespace string) {
 
 func endpointHealth(namespace string) {
 	go func() {
-		healthCheckClient := &http.Client{
-			Timeout:   time.Duration(config.apiTimeout) * time.Second,
-			Transport: tr,
-			CheckRedirect: func(req *http.Request, via []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
-		}
+		healthCheckClient := newHealthCheckClient()
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {

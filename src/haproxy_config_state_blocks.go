@@ -144,13 +144,21 @@ func rewriteServerStateConfigBlocks(content string, serversByBackend map[string]
 		// Skip the previous block contents until the matching end marker.
 		end := -1
 		for j := i + 1; j < len(lines); j++ {
-			if strings.TrimSpace(lines[j]) == serverStateBlockEndMarker {
+			innerTrimmed := strings.TrimSpace(lines[j])
+			if innerTrimmed == serverStateBlockEndMarker {
 				end = j
 				break
 			}
+			if strings.HasPrefix(innerTrimmed, serverStateBlockBeginPrefix) {
+				nestedBackend := strings.TrimSpace(strings.TrimPrefix(innerTrimmed, serverStateBlockBeginPrefix))
+				if nestedBackend == "" {
+					nestedBackend = "<missing-backend>"
+				}
+				return "", 0, fmt.Errorf("%s for backend %q at line %d is not closed before nested %s for backend %q at line %d", serverStateBlockBeginPrefix, backend, i+1, serverStateBlockBeginPrefix, nestedBackend, j+1)
+			}
 		}
 		if end == -1 {
-			return "", 0, fmt.Errorf("%s for backend %q has no matching %s", serverStateBlockBeginPrefix, backend, serverStateBlockEndMarker)
+			return "", 0, fmt.Errorf("%s for backend %q at line %d has no matching %s", serverStateBlockBeginPrefix, backend, i+1, serverStateBlockEndMarker)
 		}
 
 		out = append(out, lines[end]) // preserve the end marker line
