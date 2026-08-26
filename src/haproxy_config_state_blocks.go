@@ -171,8 +171,12 @@ func formatServerEndpoint(addr, port string) string {
 	host := strings.TrimSpace(addr)
 	if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
 		host = "[" + host + "]"
-	} else if strings.Contains(host, ":") && !(strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]")) {
-		host = "[" + host + "]"
+	} else if strings.Contains(host, ":") {
+		if !strings.HasPrefix(host, "[") {
+			host = "[" + host + "]"
+		} else if !strings.HasSuffix(host, "]") {
+			host = "[" + host + "]"
+		}
 	}
 	return host + ":" + port
 }

@@ -334,14 +334,6 @@ func setupPrometheusMetrics() {
 
 }
 
-func observeReloadTimeMetric(e time.Duration) {
-	Metrics.HistogramReloadDuration.Observe(float64(e) / float64(time.Second))
-}
-
 func observeAppRefreshTimeMetric(namespace string, e time.Duration) {
 	Metrics.HistogramAppRefreshDuration.WithLabelValues(namespace).Observe(float64(e) / float64(time.Second))
-}
-
-func observeTemplateRenderTimeMetric(e time.Duration, result string) {
-	Metrics.TemplateRenderDuration.WithLabelValues(result).Observe(float64(e) / float64(time.Second))
 }

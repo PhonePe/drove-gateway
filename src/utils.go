@@ -24,7 +24,9 @@ func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
 	}
 
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
 
 	if err := tmpFile.Chmod(mode); err != nil {
 		_ = tmpFile.Close()
@@ -156,7 +158,7 @@ func persistStateToDisk(state PersistedDataManagerState) {
 			}).Warn("Timed out waiting for datamanager state persistence")
 			updateDiskIOHealth(false, "Disk write timed out for datamanager state")
 			go func() {
-				_ = <-errCh
+				<-errCh
 				atomic.StoreInt32(&persistStateToDiskInFlight, 0)
 			}()
 			return

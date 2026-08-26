@@ -9,7 +9,6 @@ require (
 	github.com/haproxytech/client-native/v5 v5.1.20
 	github.com/google/renameio v1.0.1
 	github.com/nginxinc/nginx-plus-go-client v1.3.0
-	github.com/peterbourgon/g2s v0.0.0-20170223122336-d4e7ad98afea
 	github.com/prometheus/client_golang v1.14.0
 	github.com/sirupsen/logrus v1.9.3
 )

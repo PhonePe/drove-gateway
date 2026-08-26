@@ -69,7 +69,7 @@ func (manager *NginxAPIManager) UnmarshalServerStruct(server nplus.UpstreamServe
 		}).Error("unable to marshal upstream server struct")
 		return ""
 	}
-	return fmt.Sprintf("%s", jsonData)
+	return string(jsonData)
 }
 
 // ReconcileAllVhosts updates all HTTP vhosts using the NGINX Plus API.

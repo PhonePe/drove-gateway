@@ -31,12 +31,12 @@ func NewHaproxyManager(ctx context.Context, haproxySocketAddr string, disableLar
 	logger.WithField("haproxy_socket", haproxySocketAddr).Debug("Preparing to connect to HAProxy runtime API")
 
 	if haproxySocketAddr == "" {
-		return nil, errors.New("HAProxy socket address is not configured")
+		return nil, errors.New("haproxy socket address is not configured")
 	}
 
 	if IsUnixSocketAddr(haproxySocketAddr) {
 		if _, err := os.Stat(haproxySocketAddr); os.IsNotExist(err) {
-			return nil, fmt.Errorf("HAProxy socket file does not exist: %s", haproxySocketAddr)
+			return nil, fmt.Errorf("haproxy socket file does not exist: %s", haproxySocketAddr)
 		}
 	}
 
@@ -138,7 +138,7 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 
 	for backend, hosts := range backendsToReconcile {
 
-		currentServersForBackend := []*runtime_models.RuntimeServer{}
+		var currentServersForBackend []*runtime_models.RuntimeServer
 		backendErr := error(nil)
 		// If we have state for this backend from the aggregated call, use it directly.
 		// This avoids making an additional API call per backend.
@@ -207,7 +207,7 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 			logger.WithField("reconciled_backends", reconciledBackends).Error("Failed to reconcile any HAProxy backends")
 			GlobalProxyManager.UpdateAPIUpdatesHealthStatus(false, errors.Join(errors.New("failed to reconcile any HAProxy backends"), err).Error())
 		}
-		return errors.Join(errors.New("Reconciliation failed for some or all HAProxy backends"), err)
+		return errors.Join(errors.New("reconciliation failed for some or all HAProxy backends"), err)
 	} else if len(reconciliationFailedBackends) == 0 {
 		resultLabel = "success"
 		logger.Info("Successfully reconciled all HAProxy backends")

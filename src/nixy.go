@@ -18,7 +18,6 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/gorilla/mux"
-	"github.com/peterbourgon/g2s"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 )
@@ -175,9 +174,7 @@ var version = "master" //set by ldflags
 var date string        //set by ldflags
 var commit string      //set by ldflags
 var config = Config{LeftDelimiter: "{{", RightDelimiter: "}}"}
-var statsd g2s.Statter
 var health Health
-var lastConfig string
 var db DataManager
 var logger = logrus.New()
 
@@ -196,7 +193,7 @@ var GlobalProxyManager ProxyManager
 
 // set log level
 func setloglevel() {
-	logLevel := logrus.InfoLevel
+	var logLevel logrus.Level
 	switch config.LogLevel {
 	case "trace":
 		logLevel = logrus.TraceLevel
@@ -356,7 +353,8 @@ func setupDefaultConfig() {
 	}
 
 	//set proxy platform parameters
-	if config.ProxyPlatform == "nginx" {
+	switch config.ProxyPlatform {
+	case "nginx":
 		ConfigPath = config.NginxConfig
 		templatePath = config.NginxTemplate
 		ReloadCmd = config.NginxCmd
@@ -390,7 +388,7 @@ func setupDefaultConfig() {
 			logger.Error("Invalid input to slowstartupstream, defaulting to " + config.NginxSlowStartUpstream)
 		}
 		logger.WithFields(logrus.Fields{"max_fails": config.NginxMaxFailsUpstream, "fail_timeout": config.NginxFailTimeoutUpstream, "slow_start": config.NginxSlowStartUpstream}).Debug("Nginx upstream healthcheck parameters set")
-	} else if config.ProxyPlatform == "haproxy" {
+	case "haproxy":
 		ConfigPath = config.HaproxyConfig
 		templatePath = config.HaproxyTemplate
 		ReloadCmd = config.HaproxyReloadCmd
@@ -418,6 +416,8 @@ func setupDefaultConfig() {
 			config.HaproxyAddServerSSLAttributesString = "ssl verify none"
 			//E.g ssl verify required ca-file ca-certificates.crt
 		}
+	default:
+		logger.WithField("platform", config.ProxyPlatform).Warn("unknown proxy platform")
 	}
 }
 
@@ -484,12 +484,11 @@ func nixyReload(w http.ResponseWriter, r *http.Request) {
 	}
 	if queued {
 		w.WriteHeader(202)
-		fmt.Fprintln(w, "queued")
+		_, _ = fmt.Fprintln(w, "queued")
 		return
 	}
 	w.WriteHeader(202)
-	fmt.Fprintln(w, "queue is full")
-	return
+	_, _ = fmt.Fprintln(w, "queue is full")
 }
 
 func nixyHealth(w http.ResponseWriter, r *http.Request) {
@@ -516,8 +515,7 @@ func nixyHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Add("Content-Type", "application/json; charset=utf-8")
-	w.Write(b)
-	return
+	_, _ = w.Write(b)
 }
 
 func nixyConfig(w http.ResponseWriter, r *http.Request) {
@@ -525,15 +523,13 @@ func nixyConfig(w http.ResponseWriter, r *http.Request) {
 	db.mu.RLock()
 	b, _ := json.MarshalIndent(&db, "", "  ")
 	db.mu.RUnlock()
-	w.Write(b)
-	return
+	_, _ = w.Write(b)
 }
 
 func nixyVersion(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintln(w, "version: "+version)
-	fmt.Fprintln(w, "commit: "+commit)
-	fmt.Fprintln(w, "date: "+date)
-	return
+	_, _ = fmt.Fprintln(w, "version: "+version)
+	_, _ = fmt.Fprintln(w, "commit: "+commit)
+	_, _ = fmt.Fprintln(w, "date: "+date)
 }
 
 func updateHealthSection(section string, status bool, message string) {

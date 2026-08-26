@@ -136,7 +136,9 @@ func fetchRecentEvents(httpClient *http.Client, syncPoint *CurrSyncPoint, namesp
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	decoder := json.NewDecoder(resp.Body)
 	var newEventsApiResponse = DroveEventsApiResponse{}
 
@@ -149,7 +151,7 @@ func fetchRecentEvents(httpClient *http.Client, syncPoint *CurrSyncPoint, namesp
 		"namespace": namespace,
 	}).Debug("events response")
 	if newEventsApiResponse.Status != "SUCCESS" {
-		return nil, errors.New("Events api call failed. Message: " + newEventsApiResponse.Message)
+		return nil, errors.New("events API call failed. message: " + newEventsApiResponse.Message)
 	}
 
 	syncPoint.LastSyncTime = newEventsApiResponse.EventSummary.LastSyncTime
@@ -501,7 +503,7 @@ func endpointHealthHandler(healthCheckClient *http.Client, namespace string) {
 			health.NamespaceEndpoints[namespace][i].Message = err.Error()
 			continue
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if resp.StatusCode != 200 {
 			health.NamespaceEndpoints[namespace][i].Healthy = false
 			health.NamespaceEndpoints[namespace][i].Message = resp.Status
@@ -573,7 +575,9 @@ func fetchApps(httpClient *http.Client, droveConfig DroveConfig, jsonapps *Drove
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	decoder := json.NewDecoder(resp.Body)
 	err = decoder.Decode(&jsonapps)
 	if err != nil {

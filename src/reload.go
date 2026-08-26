@@ -178,8 +178,12 @@ func updateAndReloadConfig(data *RenderingData) error {
 			Metrics.HistogramReloadDuration.Observe(float64(elapsed) / float64(time.Second))
 		}()
 		config.LastUpdates.LastProxyProgramReload = time.Now()
-		db.UpdateLastKnownVhosts(vhosts)
-		db.UpdateLastKnownBackends(data.currentBackendNames)
+		if err := db.UpdateLastKnownVhosts(vhosts); err != nil {
+			logger.WithError(err).Warn("Failed to persist last known vhosts after successful reload")
+		}
+		if err := db.UpdateLastKnownBackends(data.currentBackendNames); err != nil {
+			logger.WithError(err).Warn("Failed to persist last known backends after successful reload")
+		}
 		//sleep some time for the reload to stabilize
 		time.Sleep(500 * time.Millisecond)
 	}
@@ -290,10 +294,10 @@ func renderConfigFromTemplate(tmpl *template.Template, data *RenderingData, file
 	err := tmpl.Execute(file, data)
 	duration := time.Since(start)
 	resultLabel := "success"
-	Metrics.TemplateRenderDuration.WithLabelValues(resultLabel).Observe(float64(duration) / float64(time.Second))
 	if err != nil {
 		resultLabel = "error"
 	}
+	Metrics.TemplateRenderDuration.WithLabelValues(resultLabel).Observe(float64(duration) / float64(time.Second))
 	return err
 }
 
@@ -311,9 +315,24 @@ func writeConf(data *RenderingData) error {
 	if err != nil {
 		return err
 	}
-	defer tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
-	lastConfig = tmpFile.Name()
+	defer func() {
+		err = tmpFile.Close()
+		if err != nil {
+			logger.WithFields(logrus.Fields{
+				"file": tmpFile.Name(),
+				"error": err,
+			}).Warning("Failed to close temporary file")
+		}
+	}()
+	defer func() {
+		err = os.Remove(tmpFile.Name())
+		if err != nil {
+			logger.WithFields(logrus.Fields{
+				"file": tmpFile.Name(),
+				"error": err,
+			}).Warning("Failed to remove temporary file")
+		}
+	}()
 
 	err = renderConfigFromTemplate(template, data, tmpFile)
 	if err != nil {
@@ -352,7 +371,6 @@ func writeConf(data *RenderingData) error {
 	if err != nil {
 		return err
 	}
-	lastConfig = ConfigPath
 	return nil
 }
 
@@ -451,58 +469,55 @@ func reloadWorker() {
 		pendingReconcile := false
 		unresponsiveSince := time.Time{}
 		thresholdBreached := false
-		for {
-			select {
-			case <-ticker.C:
-				// If proxy restart is in progress, wait until proxy control-plane is reachable before
-				// consuming queued reconcile events. This avoids losing events to failed reconciles.
-				if proxyRestartInProgress.Load() {
-					if GlobalProxyManager == nil || !GlobalProxyManager.IsControlPlaneResponsive() {
-						if unresponsiveSince.IsZero() {
-							unresponsiveSince = time.Now()
-						}
-						unresponsiveFor := time.Since(unresponsiveSince)
-						timeout := time.Duration(config.ProxyControlPlaneTimeoutSec) * time.Second
-						if unresponsiveFor > timeout {
-							msg := fmt.Sprintf("proxy control-plane unresponsive for %s (timeout=%s)", unresponsiveFor.Truncate(time.Second), timeout)
-							updateHealthSection("ProxyControlPlane", false, msg)
-							if !thresholdBreached {
-								Metrics.CountProxyControlPlaneTimeouts.Inc()
-								logger.WithField("timeout", timeout).Error("Proxy control-plane unresponsive beyond configured timeout")
-								thresholdBreached = true
-							}
-						}
-						logger.Debug("Proxy restart in progress and control-plane not responsive yet; deferring reconciliation")
-						continue
+		for range ticker.C {
+			// If proxy restart is in progress, wait until proxy control-plane is reachable before
+			// consuming queued reconcile events. This avoids losing events to failed reconciles.
+			if proxyRestartInProgress.Load() {
+				if GlobalProxyManager == nil || !GlobalProxyManager.IsControlPlaneResponsive() {
+					if unresponsiveSince.IsZero() {
+						unresponsiveSince = time.Now()
 					}
-					proxyRestartInProgress.Store(false)
-					unresponsiveSince = time.Time{}
-					thresholdBreached = false
-					updateHealthSection("ProxyControlPlane", true, "OK")
-					logger.Info("Proxy control-plane is responsive again; resuming reconciliation processing")
-				}
-
-				if !pendingReconcile {
-					select {
-					case <-appsConfigUpdateSignalQueue:
-						pendingReconcile = true
-					default:
-						continue
+					unresponsiveFor := time.Since(unresponsiveSince)
+					timeout := time.Duration(config.ProxyControlPlaneTimeoutSec) * time.Second
+					if unresponsiveFor > timeout {
+						msg := fmt.Sprintf("proxy control-plane unresponsive for %s (timeout=%s)", unresponsiveFor.Truncate(time.Second), timeout)
+						updateHealthSection("ProxyControlPlane", false, msg)
+						if !thresholdBreached {
+							Metrics.CountProxyControlPlaneTimeouts.Inc()
+							logger.WithField("timeout", timeout).Error("Proxy control-plane unresponsive beyond configured timeout")
+							thresholdBreached = true
+						}
 					}
-				}
-
-				// SIGUSR1 may arrive between the earlier readiness check and this point.
-				// Preserve the pending reconcile and retry once the proxy is responsive again.
-				if proxyRestartInProgress.Load() {
+					logger.Debug("Proxy restart in progress and control-plane not responsive yet; deferring reconciliation")
 					continue
 				}
-
-				if err := reload(); err != nil {
-					logger.WithField("error", err).Warn("Reconciliation failed; retaining pending trigger for retry")
-					continue
-				}
-				pendingReconcile = false
+				proxyRestartInProgress.Store(false)
+				unresponsiveSince = time.Time{}
+				thresholdBreached = false
+				updateHealthSection("ProxyControlPlane", true, "OK")
+				logger.Info("Proxy control-plane is responsive again; resuming reconciliation processing")
 			}
+
+			if !pendingReconcile {
+				select {
+				case <-appsConfigUpdateSignalQueue:
+					pendingReconcile = true
+				default:
+					continue
+				}
+			}
+
+			// SIGUSR1 may arrive between the earlier readiness check and this point.
+			// Preserve the pending reconcile and retry once the proxy is responsive again.
+			if proxyRestartInProgress.Load() {
+				continue
+			}
+
+			if err := reload(); err != nil {
+				logger.WithField("error", err).Warn("Reconciliation failed; retaining pending trigger for retry")
+				continue
+			}
+			pendingReconcile = false
 		}
 	}()
 }

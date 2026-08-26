@@ -189,7 +189,8 @@ func (pmgr *HAProxyManager) GenerateStableServerName(host Host) string {
 func setupGlobalProxyManager() ProxyManager {
 	var pm ProxyManager
 	// Conditionally initialize runtime API manager at startup
-	if config.ProxyPlatform == "nginx" {
+	switch config.ProxyPlatform {
+	case "nginx":
 		logger.Debug("Platform:" + config.ProxyPlatform)
 
 		if len(config.Nginxplusapiaddr) > 0 {
@@ -213,8 +214,7 @@ func setupGlobalProxyManager() ProxyManager {
 			pm = &NginxProxyManager{config: &config, apiManagerDisabled: true, apiManager: nil}
 			logger.Info("Nginx http api client not initialized at startup as nginx api address is not configured")
 		}
-
-	} else if config.ProxyPlatform == "haproxy" {
+	case "haproxy":
 		logger.Debug("Platform:" + config.ProxyPlatform)
 
 		if len(config.HaproxySocketAddr) > 0 {
@@ -236,7 +236,7 @@ func setupGlobalProxyManager() ProxyManager {
 			pm = &HAProxyManager{config: &config, apiManagerDisabled: true, apiManager: nil}
 			logger.Info("Haproxy Runtime API client not initialized at startup as haproxy socket address is not configured")
 		}
-	} else {
+	default:
 		logger.WithFields(logrus.Fields{
 			"platform":            config.ProxyPlatform,
 			"nginx_plus_api_addr": config.Nginxplusapiaddr,
