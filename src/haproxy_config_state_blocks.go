@@ -10,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
-
-	"github.com/sirupsen/logrus"
 )
 
 // Markers used to delimit drove-gateway managed server blocks inside the HAProxy config.
@@ -69,7 +67,6 @@ func syncHaproxyServerStateConfigBlocks() error {
 		// dynamic servers afterwards.
 		if errors.Is(stateErr, os.ErrNotExist) {
 			logger.WithField("path", config.HaproxyGlobalServerStateFilePath).Warn("HAProxy server state file not found; drove-managed blocks will be emptied")
-			fmt.Fprintf(os.Stderr, "nixy[haproxy-state-sync]: server state file not found at %s; managed blocks will be emptied\n", config.HaproxyGlobalServerStateFilePath)
 			serversByBackend = map[string][]serverStateEntry{}
 		} else {
 			return fmt.Errorf("failed to parse HAProxy server state file: %w", stateErr)
@@ -92,7 +89,6 @@ func syncHaproxyServerStateConfigBlocks() error {
 
 	if newContent == contentStr {
 		logger.WithField("path", configPath).Info("Drove-managed HAProxy server state blocks are already up to date")
-		fmt.Fprintf(os.Stdout, "nixy[haproxy-state-sync]: no changes (config=%s blocks=%d backends_in_state_file=%d servers_in_state_file=%d)\n", configPath, blockCount, backendsInStateFile, serversInStateFile)
 		return nil
 	}
 
@@ -100,11 +96,11 @@ func syncHaproxyServerStateConfigBlocks() error {
 		return fmt.Errorf("failed to write updated haproxy_config %q: %w", configPath, err)
 	}
 
-	logger.WithFields(logrus.Fields{
-		"path":   configPath,
-		"blocks": blockCount,
-	}).Info("Updated drove-managed HAProxy server state blocks")
-	fmt.Fprintf(os.Stdout, "nixy[haproxy-state-sync]: updated managed blocks (config=%s blocks=%d backends_in_state_file=%d servers_in_state_file=%d)\n", configPath, blockCount, backendsInStateFile, serversInStateFile)
+	logger.WithField("path", configPath).
+		WithField("blocks", blockCount).
+		WithField("backends_in_state_file", backendsInStateFile).
+		WithField("servers_in_state_file", serversInStateFile).
+		Info("Updated drove-managed HAProxy server state blocks")
 	return nil
 }
 
