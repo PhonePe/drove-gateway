@@ -361,16 +361,16 @@ func writeConf(data *RenderingData) error {
 
 	err = renderConfigFromTemplate(template, data, tmpFile)
 	if err != nil {
-		updateHealthSection("Config", false, err.Error())
+		updateHealthStatus(&health.Config, Metrics.GaugeConfigGenerationHealthy, false, err.Error())
 		return err
 	}
 	setLastConfigRendered(time.Now())
 	err = GlobalProxyManager.CheckConfig(tmpFile.Name())
 	if err != nil {
-		updateHealthSection("Config", false, err.Error())
+		updateHealthStatus(&health.Config, Metrics.GaugeConfigGenerationHealthy, false, err.Error())
 		logger.Error("Error in config generated")
 	} else {
-		updateHealthSection("Config", true, "OK")
+		updateHealthStatus(&health.Config, Metrics.GaugeConfigGenerationHealthy, true, "OK")
 	}
 	if err != nil {
 		return err
@@ -428,10 +428,10 @@ func resolveWithIPFallback(hostname string) (string, error) {
 			"hostname": hostname,
 			"error":    err,
 		}).Warning("DNS resolution failed, falling back to hostname")
-		updateHealthSection("ResolverHealth", false, fmt.Sprintf("DNS resolution failed for %s: %v", hostname, err))
+		updateHealthStatus(&health.ResolverHealth, Metrics.GaugeResolverHealthy, false, fmt.Sprintf("DNS resolution failed for %s: %v", hostname, err))
 		return hostname, err
 	}
-	updateHealthSection("ResolverHealth", true, "OK")
+	updateHealthStatus(&health.ResolverHealth, Metrics.GaugeResolverHealthy, true, "OK")
 	return ip, nil
 }
 
@@ -475,15 +475,21 @@ func getTmpl(proxyTemplatePath string) (*template.Template, error) {
 				"error": tmplCacheErr,
 				"file":  proxyTemplatePath,
 			}).Error("unable to read template")
-			updateHealthSection("Template", false, tmplCacheErr.Error())
+			updateHealthStatus(&health.Template, Metrics.GaugeTemplateRenderingHealthy, false, tmplCacheErr.Error())
 		} else {
 			logger.WithFields(logrus.Fields{
 				"file": proxyTemplatePath,
 			}).Info("Template read successfully")
-			updateHealthSection("Template", true, "OK")
+			updateHealthStatus(&health.Template, Metrics.GaugeTemplateRenderingHealthy, true, "OK")
 		}
 	})
 	return tmplCache, tmplCacheErr
+}
+
+type reconcileLoop struct {
+	pendingReconcile  bool
+	unresponsiveSince time.Time
+	thresholdBreached bool
 }
 
 func reloadWorker() {
@@ -492,42 +498,40 @@ func reloadWorker() {
 		// Keep at most one pending reconcile trigger locally so we do not drain the queue while
 		// proxy restart is in progress.
 		ticker := time.NewTicker(1 * time.Second)
-		pendingReconcile := false
-		unresponsiveSince := time.Time{}
-		thresholdBreached := false
+		loop := reconcileLoop{}
 		for range ticker.C {
 			// If proxy restart is in progress, wait until proxy control-plane is reachable before
 			// consuming queued reconcile events. This avoids losing events to failed reconciles.
 			if proxyRestartInProgress.Load() {
 				if GlobalProxyManager == nil || !GlobalProxyManager.IsControlPlaneResponsive() {
-					if unresponsiveSince.IsZero() {
-						unresponsiveSince = time.Now()
+					if loop.unresponsiveSince.IsZero() {
+						loop.unresponsiveSince = time.Now()
 					}
-					unresponsiveFor := time.Since(unresponsiveSince)
+					unresponsiveFor := time.Since(loop.unresponsiveSince)
 					timeout := time.Duration(config.ProxyControlPlaneTimeoutSec) * time.Second
 					if unresponsiveFor > timeout {
 						msg := fmt.Sprintf("proxy control-plane unresponsive for %s (timeout=%s)", unresponsiveFor.Truncate(time.Second), timeout)
-						updateHealthSection("ProxyControlPlane", false, msg)
-						if !thresholdBreached {
+						updateHealthStatus(&health.ProxyControlPlane, Metrics.GaugeProxyControlPlaneHealthy, false, msg)
+						if !loop.thresholdBreached {
 							Metrics.CountProxyControlPlaneTimeouts.Inc()
 							logger.WithField("timeout", timeout).Error("Proxy control-plane unresponsive beyond configured timeout")
-							thresholdBreached = true
+							loop.thresholdBreached = true
 						}
 					}
 					logger.Debug("Proxy restart in progress and control-plane not responsive yet; deferring reconciliation")
 					continue
 				}
 				proxyRestartInProgress.Store(false)
-				unresponsiveSince = time.Time{}
-				thresholdBreached = false
-				updateHealthSection("ProxyControlPlane", true, "OK")
+				loop.unresponsiveSince = time.Time{}
+				loop.thresholdBreached = false
+				updateHealthStatus(&health.ProxyControlPlane, Metrics.GaugeProxyControlPlaneHealthy, true, "OK")
 				logger.Info("Proxy control-plane is responsive again; resuming reconciliation processing")
 			}
 
-			if !pendingReconcile {
+			if !loop.pendingReconcile {
 				select {
 				case <-appsConfigUpdateSignalQueue:
-					pendingReconcile = true
+					loop.pendingReconcile = true
 				default:
 					continue
 				}
@@ -543,7 +547,7 @@ func reloadWorker() {
 				logger.WithField("error", err).Warn("Reconciliation failed; retaining pending trigger for retry")
 				continue
 			}
-			pendingReconcile = false
+			loop.pendingReconcile = false
 		}
 	}()
 }

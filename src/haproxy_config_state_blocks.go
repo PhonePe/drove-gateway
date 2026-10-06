@@ -27,6 +27,10 @@ const (
 	serverStateBlockBeginPrefix = "#DROVE-SERVERS-BEGIN"
 	serverStateBlockEndMarker   = "#DROVE-SERVERS-END"
 	haproxyServerStateSchemaV1  = 1
+	defaultBeNameIdx            = 1
+	defaultSrvNameIdx           = 3
+	defaultSrvAddrIdx           = 4
+	defaultSrvPortIdx           = 18
 )
 
 type serverStateEntry struct {
@@ -201,7 +205,7 @@ func parseServerStateFileByBackend(path string) (map[string][]serverStateEntry, 
 	result := make(map[string][]serverStateEntry)
 
 	// Default column indexes for server state file format version 1.
-	beNameIdx, srvNameIdx, srvAddrIdx, srvPortIdx := 1, 3, 4, 18
+	beNameIdx, srvNameIdx, srvAddrIdx, srvPortIdx := defaultBeNameIdx, defaultSrvNameIdx, defaultSrvAddrIdx, defaultSrvPortIdx
 	headerParsed := false
 	versionValidated := false
 

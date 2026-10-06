@@ -18,6 +18,22 @@ import (
 	runtime_options "github.com/haproxytech/client-native/v5/runtime/options"
 )
 
+var apiOpSleepDurations = map[string]time.Duration{
+	"backend_state_retry": 500 * time.Millisecond,
+	"server_state_change": 200 * time.Millisecond,
+	"server_down_poll":    100 * time.Millisecond,
+	"server_delete_retry": 500 * time.Millisecond,
+	"server_add_retry":    500 * time.Millisecond,
+	"server_add_settle":   10 * time.Millisecond,
+}
+
+var apiOpContextTimeoutDurations = map[string]time.Duration{
+	"backend_state_retry": 10 * time.Second,
+	"server_down_poll":    5 * time.Second,
+	"server_delete_retry": 30 * time.Second,
+	"server_add_retry":    10 * time.Second,
+}
+
 type HaproxyManager struct {
 	client                           runtime_api.Runtime
 	add_server_attributes_string     string
@@ -151,7 +167,7 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 			logger.WithField("backend", backend).Debug("No existing servers found for backend in aggregated state. Trying to get state for the backend directly")
 			currentServersForBackend, backendErr = manager.client.GetServersState(backend)
 			if backendErr != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), apiOpContextTimeoutDurations["backend_state_retry"])
 				defer cancel()
 				logger.WithField("backend", backend).Warn("Retrying to get servers state for backend after brief wait. Some backends might take time to exist after a reload")
 			waitBackendGroup:
@@ -159,7 +175,7 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 				case <-ctx.Done():
 					logger.WithFields(logrus.Fields{"backend": backend}).Error("Context timeout waiting to retry get servers state for backend")
 					break waitBackendGroup
-				case <-time.After(500 * time.Millisecond):
+				case <-time.After(apiOpSleepDurations["backend_state_retry"]):
 					currentServersForBackend, backendErr = manager.client.GetServersState(backend)
 					if backendErr == nil {
 						break waitBackendGroup
@@ -218,10 +234,10 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 		if err := manager.writeGlobalServerStateFile(); err != nil {
 			Metrics.HaproxyAPICallsFailed.WithLabelValues("write_global_server_state_file").Inc()
 			logger.WithField("error", err).Warning("Failed to write HAProxy global server state file")
-			updateHealthSection("ServerStateFileUpdate", false, err.Error())
+			updateHealthStatus(&health.ServerStateFileUpdate, Metrics.GaugeServerStateFileUpdateHealthy, false, err.Error())
 		} else if manager.manage_global_server_state_file {
 			Metrics.HaproxyAPICallsSuccessful.WithLabelValues("write_global_server_state_file").Inc()
-			updateHealthSection("ServerStateFileUpdate", true, "OK")
+			updateHealthStatus(&health.ServerStateFileUpdate, Metrics.GaugeServerStateFileUpdateHealthy, true, "OK")
 		}
 	}
 	return nil
@@ -322,14 +338,14 @@ func (manager *HaproxyManager) removeStaleServers(backend string, currentServers
 				Metrics.HaproxyAPICallsFailed.WithLabelValues("set_server_state_drain").Inc()
 				logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name, "error": err}).Error("Failed to set server to drain")
 			}
-			time.Sleep(200 * time.Millisecond) // wait briefly to ensure HAProxy processes the state change
+			time.Sleep(apiOpSleepDurations["server_state_change"]) // wait briefly to ensure HAProxy processes the state change
 			if err := manager.client.SetServerState(backend, srv.Name, "maint"); err != nil {
 				Metrics.HaproxyAPICallsFailed.WithLabelValues("set_server_state_maint").Inc()
 				logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name, "error": err}).Error("Failed to disable server")
 				errs = append(errs, fmt.Sprintf("disable %s: %v", srv.Name, err))
 			} else {
 				Metrics.HaproxyAPICallsSuccessful.WithLabelValues("set_server_state_maint").Inc()
-				time.Sleep(200 * time.Millisecond) // wait briefly to ensure HAProxy processes the state change
+				time.Sleep(apiOpSleepDurations["server_state_change"]) // wait briefly to ensure HAProxy processes the state change
 			}
 			if srvr, err := manager.client.GetServerState(backend, srv.Name); err != nil {
 				errs = append(errs, fmt.Sprintf("refresh after disable %s: %v", srv.Name, err))
@@ -337,7 +353,7 @@ func (manager *HaproxyManager) removeStaleServers(backend string, currentServers
 				logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name, "state": srvr}).Debug("Refreshed server state after disabling server")
 				if srvr.OperationalState != "down" {
 					logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name, "OperationalState": srvr.OperationalState}).Info("Server not yet down state after disabling. Waiting to ensure in-flight connections are terminated.")
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					ctx, cancel := context.WithTimeout(context.Background(), apiOpContextTimeoutDurations["server_down_poll"])
 					defer cancel()
 				waitDownGroup:
 					for err != nil {
@@ -346,7 +362,7 @@ func (manager *HaproxyManager) removeStaleServers(backend string, currentServers
 							logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name}).Error("Context timeout waiting for server to exit 'stopping' state")
 							break waitDownGroup
 						default:
-							time.Sleep(100 * time.Millisecond)
+							time.Sleep(apiOpSleepDurations["server_down_poll"])
 							srvr, err = manager.client.GetServerState(backend, srv.Name)
 							if err == nil {
 								if srvr.OperationalState == "down" {
@@ -363,9 +379,9 @@ func (manager *HaproxyManager) removeStaleServers(backend string, currentServers
 			if err := manager.client.DeleteServer(backend, srv.Name); err != nil {
 				Metrics.HaproxyAPICallsFailed.WithLabelValues("delete_server").Inc()
 				logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name, "error": err}).Error("Failed to delete server")
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(apiOpSleepDurations["server_delete_retry"])
 				//even if server is down, deletion might fail for some time
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), apiOpContextTimeoutDurations["server_delete_retry"])
 				defer cancel()
 			waitDelGroup:
 				for err != nil {
@@ -375,7 +391,7 @@ func (manager *HaproxyManager) removeStaleServers(backend string, currentServers
 						logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name}).Error("Context timeout waiting to retry server deletion")
 						break waitDelGroup
 					default:
-						time.Sleep(500 * time.Millisecond)
+						time.Sleep(apiOpSleepDurations["server_delete_retry"])
 						err = manager.client.DeleteServer(backend, srv.Name)
 						if err == nil {
 							logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name}).Info("Successfully deleted server after retry")
@@ -449,7 +465,7 @@ func (manager *HaproxyManager) addNewServer(backend, serverName string, host Hos
 			return manager.updateExistingServer(backend, serverName, host, currentServer)
 		} else {
 			//wait for backend to exist in case of recent reload
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), apiOpContextTimeoutDurations["server_add_retry"])
 			defer cancel()
 			logger.WithFields(logrus.Fields{"backend": backend, "server": serverName}).Debug("Retrying to add server after brief wait. Some backends might take time to exist after a reload")
 		waitAddGroup:
@@ -457,9 +473,9 @@ func (manager *HaproxyManager) addNewServer(backend, serverName string, host Hos
 			case <-ctx.Done():
 				logger.WithFields(logrus.Fields{"backend": backend, "server": serverName}).Error("Context timeout waiting to retry add server")
 				break waitAddGroup
-			case <-time.After(500 * time.Millisecond):
+			case <-time.After(apiOpSleepDurations["server_add_retry"]):
 				err = manager.client.AddServer(backend, serverName, fmt.Sprintf("%s %s", serverEndpoint, attributes_string))
-				time.Sleep(10 * time.Millisecond)
+				time.Sleep(apiOpSleepDurations["server_add_settle"])
 				srvr, runErr = manager.client.GetServerState(backend, serverName)
 				if err == nil {
 					break waitAddGroup

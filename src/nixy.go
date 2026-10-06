@@ -18,6 +18,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 )
@@ -442,10 +443,15 @@ func validateConfig() error {
 				return errors.New("haproxy_manage_global_server_state_file is enabled but haproxy_global_server_state_file_path is not set")
 			}
 			logger.Info("Haproxy will manage global server state file at " + config.HaproxyGlobalServerStateFilePath)
-			// When reloads are disabled, drove-gateway does not render haproxy.cfg, so the operator's
-			// config must contain drove-managed server blocks that we populate before every (re)start/reload.
-			// Those blocks are mandatory so that load-server-state-from-file has matching server objects.
-			if config.HaproxyReloadDisabled {
+		}
+		if config.HaproxyReloadDisabled {
+			if config.HaproxySocketAddr == "" {
+				return errors.New("haproxy_reload_disabled is enabled but haproxy_socket_addr is not set; set the socket address to allow runtime server updates")
+			}
+			if config.HaproxyManageGlobalServerStateFile {
+				// When reloads are disabled, drove-gateway does not render haproxy.cfg, so the operator's
+				// config must contain drove-managed server blocks that we populate before every (re)start/reload.
+				// Those blocks are mandatory so that load-server-state-from-file has matching server objects.
 				present, err := haproxyServerStateBlocksPresent(config.HaproxyConfig)
 				if err != nil {
 					return fmt.Errorf("unable to read haproxy_config %q to verify mandatory %s blocks: %w", config.HaproxyConfig, serverStateBlockBeginPrefix, err)
@@ -453,13 +459,6 @@ func validateConfig() error {
 				if !present {
 					return fmt.Errorf("haproxy_manage_global_server_state_file is enabled with reloads disabled but no %s / %s blocks were found in haproxy_config %q", serverStateBlockBeginPrefix, serverStateBlockEndMarker, config.HaproxyConfig)
 				}
-			}
-		}
-		if config.HaproxyReloadDisabled {
-			if config.HaproxySocketAddr == "" {
-				return errors.New("haproxy_reload_disabled is enabled but haproxy_socket_addr is not set; set the socket address to allow runtime server updates")
-			}
-			if config.HaproxyManageGlobalServerStateFile {
 				logger.Warn("haproxy_reload_disabled and haproxy_manage_global_server_state_file are both enabled. Ensure the systemd ExecStartPre/ExecReload hooks run 'nixy -sync-haproxy-state-config' so drove-managed blocks are populated before HAProxy (re)starts")
 			}
 		}
@@ -537,47 +536,16 @@ func nixyVersion(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprintln(w, "date: "+date)
 }
 
-func updateHealthSection(section string, status bool, message string) {
-	var statusFloat float64
-	if status {
-		statusFloat = 1.0
-	} else {
-		statusFloat = 0.0
-	}
+func updateHealthStatus(target *Status, gauge prometheus.Gauge, healthy bool, message string) {
 	health.Lock()
-	switch section {
-	case "ResolverHealth":
-		health.ResolverHealth.Healthy = status
-		health.ResolverHealth.Message = message
-		Metrics.GaugeResolverHealthy.Set(statusFloat)
-	case "Config":
-		health.Config.Healthy = status
-		health.Config.Message = message
-		Metrics.GaugeConfigGenerationHealthy.Set(statusFloat)
-	case "Template":
-		health.Template.Healthy = status
-		health.Template.Message = message
-		Metrics.GaugeTemplateRenderingHealthy.Set(statusFloat)
-	case "UpstreamUpdatesViaAPI":
-		health.UpstreamUpdatesViaAPI.Healthy = status
-		health.UpstreamUpdatesViaAPI.Message = message
-		Metrics.GaugeUpstreamUpdatesViaAPIHealthy.Set(statusFloat)
-	case "ServerStateFileUpdate":
-		health.ServerStateFileUpdate.Healthy = status
-		health.ServerStateFileUpdate.Message = message
-		Metrics.GaugeServerStateFileUpdateHealthy.Set(statusFloat)
-	case "ProxyControlPlane":
-		health.ProxyControlPlane.Healthy = status
-		health.ProxyControlPlane.Message = message
-		Metrics.GaugeProxyControlPlaneHealthy.Set(statusFloat)
-	case "DiskIO":
-		health.DiskIO.Healthy = status
-		health.DiskIO.Message = message
-		Metrics.GaugeDiskIOHealthy.Set(statusFloat)
-	default:
-		return
+	defer health.Unlock()
+	target.Healthy = healthy
+	target.Message = message
+	value := 0.0
+	if healthy {
+		value = 1.0
 	}
-	health.Unlock()
+	gauge.Set(value)
 }
 
 // Implement ProxyManager interface for NginxAPIManager
@@ -607,7 +575,7 @@ var proxyRestartInProgress atomic.Bool
 // This replaces the older state-file restore script by rebuilding runtime state directly from the
 // apps Drove Gateway already knows about.
 func setupSignalHandlers() {
-	sigCh := make(chan os.Signal, 4)
+	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGUSR1, syscall.SIGUSR2)
 	go func() {
 		for sig := range sigCh {

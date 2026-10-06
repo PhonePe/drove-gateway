@@ -103,7 +103,7 @@ func diskIOTimeout() time.Duration {
 }
 
 func updateDiskIOHealth(healthy bool, message string) {
-	updateHealthSection("DiskIO", healthy, message)
+	updateHealthStatus(&health.DiskIO, Metrics.GaugeDiskIOHealthy, healthy, message)
 }
 
 func rememberDataManagerState() {

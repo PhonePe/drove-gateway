@@ -759,7 +759,7 @@ func syncAppsAndVhosts(droveConfig DroveConfig, jsonapps *DroveApps, vhosts *Vho
 	return false
 }
 
-func refreshApps(httpClient *http.Client, namespace string, leaderShifted bool) (bool, bool) {
+func refreshApps(httpClient *http.Client, namespace string, leaderShifted bool) (appsUpdated bool, refreshSuccess bool) {
 	logger.Trace("Refreshing Apps Data for namespace " + namespace)
 	start := time.Now()
 	droveConfig, er := db.ReadDroveConfig(namespace)
