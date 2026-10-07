@@ -13,7 +13,7 @@ stream {
     {{- range $id, $definition := $app.PortDefinitions}}
     upstream {{index $app.Hosts 0}}-{{ $id }} {
         {{- range $task := $app.Tasks}}
-        server {{ $task.Host }}:{{ index $task.Ports $id }};
+        server {{ hostport $task.Host (index $task.Ports $id) }};
         {{- end}}
     }
     server {

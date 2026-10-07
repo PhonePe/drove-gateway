@@ -12,6 +12,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/google/renameio"
 	"github.com/sirupsen/logrus"
 )
 
@@ -45,12 +46,36 @@ var tmplCache *template.Template
 var tmplCacheErr error
 var tmplCacheOnce sync.Once
 
+func setLastSync(ts time.Time) {
+	config.Lock()
+	config.LastUpdates.LastSync = ts
+	config.Unlock()
+}
+
+func setLastConfigValid(ts time.Time) {
+	config.Lock()
+	config.LastUpdates.LastConfigValid = ts
+	config.Unlock()
+}
+
+func setLastProxyProgramReload(ts time.Time) {
+	config.Lock()
+	config.LastUpdates.LastProxyProgramReload = ts
+	config.Unlock()
+}
+
+func setLastConfigRendered(ts time.Time) {
+	config.Lock()
+	config.LastUpdates.LastConfigRendered = ts
+	config.Unlock()
+}
+
 func reload() error {
 	start := time.Now()
 	var err error
 	data := RenderingData{}
 	createRenderingData(&data)
-	config.LastUpdates.LastSync = time.Now()
+	setLastSync(time.Now())
 
 	if !GlobalProxyManager.IsRuntimeAPIUpstreamUpdateEnabled() {
 		logger.Debug("Runtime API calls to update upstreams are disabled")
@@ -141,7 +166,7 @@ func reload() error {
 
 func updateProxyConfig(data *RenderingData) error {
 	logger.Debug("Updating " + data.ProxyPlatform + " config")
-	config.LastUpdates.LastSync = time.Now()
+	setLastSync(time.Now())
 	err := writeConf(data)
 	if err != nil {
 		logger.WithFields(logrus.Fields{
@@ -150,7 +175,7 @@ func updateProxyConfig(data *RenderingData) error {
 		go Metrics.CountFailedReloads.Inc()
 		return err
 	}
-	config.LastUpdates.LastConfigValid = time.Now()
+	setLastConfigValid(time.Now())
 	return nil
 }
 
@@ -176,13 +201,17 @@ func updateAndReloadConfig(data *RenderingData) error {
 		go func() {
 			Metrics.HistogramReloadDuration.Observe(float64(elapsed) / float64(time.Second))
 		}()
-		config.LastUpdates.LastProxyProgramReload = time.Now()
-		db.UpdateLastKnownVhosts(vhosts)
-		db.UpdateLastKnownBackends(data.currentBackendNames)
+		setLastProxyProgramReload(time.Now())
+		if err := db.UpdateLastKnownVhosts(vhosts); err != nil {
+			logger.WithError(err).Warn("Failed to persist last known vhosts after successful reload")
+		}
+		if err := db.UpdateLastKnownBackends(data.currentBackendNames); err != nil {
+			logger.WithError(err).Warn("Failed to persist last known backends after successful reload")
+		}
 		//sleep some time for the reload to stabilize
 		time.Sleep(500 * time.Millisecond)
 	}
-	return nil
+	return err
 }
 
 func createRenderingData(data *RenderingData) {
@@ -282,7 +311,6 @@ func createRenderingData(data *RenderingData) {
 	logger.WithFields(logrus.Fields{
 		"data": data,
 	}).Trace("Rendering data generated")
-	return
 }
 
 func renderConfigFromTemplate(tmpl *template.Template, data *RenderingData, file *os.File) error {
@@ -290,17 +318,14 @@ func renderConfigFromTemplate(tmpl *template.Template, data *RenderingData, file
 	err := tmpl.Execute(file, data)
 	duration := time.Since(start)
 	resultLabel := "success"
-	Metrics.TemplateRenderDuration.WithLabelValues(resultLabel).Observe(float64(duration) / float64(time.Second))
 	if err != nil {
 		resultLabel = "error"
 	}
+	Metrics.TemplateRenderDuration.WithLabelValues(resultLabel).Observe(float64(duration) / float64(time.Second))
 	return err
 }
 
 func writeConf(data *RenderingData) error {
-	config.RLock()
-	defer config.RUnlock()
-
 	template, err := getTmpl(templatePath)
 	if err != nil {
 		return err
@@ -311,22 +336,41 @@ func writeConf(data *RenderingData) error {
 	if err != nil {
 		return err
 	}
-	defer tmpFile.Close()
-	defer os.Remove(tmpFile.Name())
-	lastConfig = tmpFile.Name()
+	tmpFileClosed := false
+	defer func() {
+		if tmpFileClosed {
+			return
+		}
+		err = tmpFile.Close()
+		if err != nil {
+			logger.WithFields(logrus.Fields{
+				"file":  tmpFile.Name(),
+				"error": err,
+			}).Warning("Failed to close temporary file")
+		}
+	}()
+	defer func() {
+		err = os.Remove(tmpFile.Name())
+		if err != nil {
+			logger.WithFields(logrus.Fields{
+				"file":  tmpFile.Name(),
+				"error": err,
+			}).Warning("Failed to remove temporary file")
+		}
+	}()
 
 	err = renderConfigFromTemplate(template, data, tmpFile)
 	if err != nil {
-		updateHealthSection("Config", false, err.Error())
+		updateHealthStatus(&health.Config, Metrics.GaugeConfigGenerationHealthy, false, err.Error())
 		return err
 	}
-	config.LastUpdates.LastConfigRendered = time.Now()
+	setLastConfigRendered(time.Now())
 	err = GlobalProxyManager.CheckConfig(tmpFile.Name())
 	if err != nil {
-		updateHealthSection("Config", false, err.Error())
+		updateHealthStatus(&health.Config, Metrics.GaugeConfigGenerationHealthy, false, err.Error())
 		logger.Error("Error in config generated")
 	} else {
-		updateHealthSection("Config", true, "OK")
+		updateHealthStatus(&health.Config, Metrics.GaugeConfigGenerationHealthy, true, "OK")
 	}
 	if err != nil {
 		return err
@@ -335,11 +379,24 @@ func writeConf(data *RenderingData) error {
 	logger.WithFields(logrus.Fields{
 		"file": ConfigPath,
 	}).Info("Writing new config")
-	err = os.Rename(tmpFile.Name(), ConfigPath)
+	if err := tmpFile.Close(); err != nil {
+		return err
+	}
+	tmpFileClosed = true
+	newConfigContent, err := os.ReadFile(tmpFile.Name())
 	if err != nil {
 		return err
 	}
-	lastConfig = ConfigPath
+	fileMode := os.FileMode(0o644)
+	if info, statErr := os.Stat(ConfigPath); statErr == nil {
+		fileMode = info.Mode().Perm()
+	} else if !os.IsNotExist(statErr) {
+		return statErr
+	}
+	err = renameio.WriteFile(ConfigPath, newConfigContent, fileMode)
+	if err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -371,10 +428,10 @@ func resolveWithIPFallback(hostname string) (string, error) {
 			"hostname": hostname,
 			"error":    err,
 		}).Warning("DNS resolution failed, falling back to hostname")
-		updateHealthSection("ResolverHealth", false, fmt.Sprintf("DNS resolution failed for %s: %v", hostname, err))
+		updateHealthStatus(&health.ResolverHealth, Metrics.GaugeResolverHealthy, false, fmt.Sprintf("DNS resolution failed for %s: %v", hostname, err))
 		return hostname, err
 	}
-	updateHealthSection("ResolverHealth", true, "OK")
+	updateHealthStatus(&health.ResolverHealth, Metrics.GaugeResolverHealthy, true, "OK")
 	return ip, nil
 }
 
@@ -408,6 +465,9 @@ func getTmpl(proxyTemplatePath string) (*template.Template, error) {
 				"tolower":   strings.ToLower,
 				"getenv":    os.Getenv,
 				"datetime":  time.Now,
+				"hostport": func(host string, port any) string {
+					return net.JoinHostPort(host, fmt.Sprint(port))
+				},
 			}).
 			ParseFiles(proxyTemplatePath)
 		if tmplCacheErr != nil {
@@ -415,27 +475,79 @@ func getTmpl(proxyTemplatePath string) (*template.Template, error) {
 				"error": tmplCacheErr,
 				"file":  proxyTemplatePath,
 			}).Error("unable to read template")
-			updateHealthSection("Template", false, tmplCacheErr.Error())
+			updateHealthStatus(&health.Template, Metrics.GaugeTemplateRenderingHealthy, false, tmplCacheErr.Error())
 		} else {
 			logger.WithFields(logrus.Fields{
 				"file": proxyTemplatePath,
 			}).Info("Template read successfully")
-			updateHealthSection("Template", true, "OK")
+			updateHealthStatus(&health.Template, Metrics.GaugeTemplateRenderingHealthy, true, "OK")
 		}
 	})
 	return tmplCache, tmplCacheErr
 }
 
+type reconcileLoop struct {
+	pendingReconcile  bool
+	unresponsiveSince time.Time
+	thresholdBreached bool
+}
+
 func reloadWorker() {
 	go func() {
-		// a ticker channel to limit reloads to drove, 1s is enough for now.
+		// A ticker channel to limit reloads, 1s is enough for now.
+		// Keep at most one pending reconcile trigger locally so we do not drain the queue while
+		// proxy restart is in progress.
 		ticker := time.NewTicker(1 * time.Second)
-		for {
-			select {
-			case <-ticker.C:
-				<-appsConfigUpdateSignalQueue
-				reload()
+		loop := reconcileLoop{}
+		for range ticker.C {
+			// If proxy restart is in progress, wait until proxy control-plane is reachable before
+			// consuming queued reconcile events. This avoids losing events to failed reconciles.
+			if proxyRestartInProgress.Load() {
+				if GlobalProxyManager == nil || !GlobalProxyManager.IsControlPlaneResponsive() {
+					if loop.unresponsiveSince.IsZero() {
+						loop.unresponsiveSince = time.Now()
+					}
+					unresponsiveFor := time.Since(loop.unresponsiveSince)
+					timeout := time.Duration(config.ProxyControlPlaneTimeoutSec) * time.Second
+					if unresponsiveFor > timeout {
+						msg := fmt.Sprintf("proxy control-plane unresponsive for %s (timeout=%s)", unresponsiveFor.Truncate(time.Second), timeout)
+						updateHealthStatus(&health.ProxyControlPlane, Metrics.GaugeProxyControlPlaneHealthy, false, msg)
+						if !loop.thresholdBreached {
+							Metrics.CountProxyControlPlaneTimeouts.Inc()
+							logger.WithField("timeout", timeout).Error("Proxy control-plane unresponsive beyond configured timeout")
+							loop.thresholdBreached = true
+						}
+					}
+					logger.Debug("Proxy restart in progress and control-plane not responsive yet; deferring reconciliation")
+					continue
+				}
+				proxyRestartInProgress.Store(false)
+				loop.unresponsiveSince = time.Time{}
+				loop.thresholdBreached = false
+				updateHealthStatus(&health.ProxyControlPlane, Metrics.GaugeProxyControlPlaneHealthy, true, "OK")
+				logger.Info("Proxy control-plane is responsive again; resuming reconciliation processing")
 			}
+
+			if !loop.pendingReconcile {
+				select {
+				case <-appsConfigUpdateSignalQueue:
+					loop.pendingReconcile = true
+				default:
+					continue
+				}
+			}
+
+			// SIGUSR1 may arrive between the earlier readiness check and this point.
+			// Preserve the pending reconcile and retry once the proxy is responsive again.
+			if proxyRestartInProgress.Load() {
+				continue
+			}
+
+			if err := reload(); err != nil {
+				logger.WithField("error", err).Warn("Reconciliation failed; retaining pending trigger for retry")
+				continue
+			}
+			loop.pendingReconcile = false
 		}
 	}()
 }

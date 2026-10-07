@@ -1,0 +1,93 @@
+# Example HAProxy configuration for drove-gateway when using
+# haproxy_manage_global_server_state_file = true.
+#
+# This file is derived from examples/haproxy.tmpl and demonstrates the required
+# directives/markers for managed server-state-file synchronization.
+#
+# Key expectations:
+# 1) global section has server-state-file path
+# 2) each managed backend includes load-server-state-from-file global
+# 3) each managed backend includes DROVE marker block:
+#      #DROVE-SERVERS-BEGIN <backend_name>
+#      #DROVE-SERVERS-END
+#
+# systemd hooks should run:
+#   nixy -sync-haproxy-state-config -f /etc/nixy/nixy.toml
+# before HAProxy (re)start/reload so these blocks are populated from the
+# state file and HAProxy can restore dynamic runtime servers.
+
+global
+  chroot /var/lib/haproxy
+  user haproxy
+  group haproxy
+  stats socket /var/lib/haproxy/stats mode 660 level admin expose-fd listeners
+  stats timeout 30s
+  log /dev/log local0
+  log /dev/log local1 notice
+  node drove-gateway
+
+  # Must match nixy.toml: haproxy_global_server_state_file_path
+  server-state-file /var/lib/haproxy/server_state
+
+defaults
+  mode http
+  log global
+  option httplog
+  option dontlognull
+  option http-keep-alive
+  option forwardfor
+  timeout connect 30s
+  timeout client 10s
+  timeout client-fin 10s
+  timeout queue 10s
+  timeout server 120s
+  timeout tunnel 30m
+  timeout http-keep-alive 10s
+
+  errorfile 400 /etc/haproxy/errors/400.http
+  errorfile 403 /etc/haproxy/errors/403.http
+  errorfile 408 /etc/haproxy/errors/408.http
+  errorfile 500 /etc/haproxy/errors/500.http
+  errorfile 502 /etc/haproxy/errors/502.http
+  errorfile 503 /etc/haproxy/errors/503.http
+  errorfile 504 /etc/haproxy/errors/504.http
+
+frontend https_in
+  mode http
+  bind :80
+
+  http-response set-header X-Proxy drove-gateway
+
+  # Host-based routing
+  use_backend %[req.hdr(host),lower,word(1,:)]
+  default_backend no-match
+
+# Example managed backend for app vhost: app1.example.com
+backend app1.example.com
+  mode http
+  balance roundrobin
+  http-request replace-header Host .* app1.example.com
+
+  # Backend-level restore behavior using the global server-state-file above.
+  load-server-state-from-file global
+
+  # Managed by drove-gateway sync mode:
+  # nixy -sync-haproxy-state-config
+  # The backend token after BEGIN must exactly match this backend name.
+  #DROVE-SERVERS-BEGIN app1.example.com
+  #DROVE-SERVERS-END
+
+# Example managed backend for app vhost: api.example.com
+backend api.example.com
+  mode http
+  balance roundrobin
+  http-request replace-header Host .* api.example.com
+
+  load-server-state-from-file global
+
+  #DROVE-SERVERS-BEGIN api.example.com
+  #DROVE-SERVERS-END
+
+backend no-match
+  mode http
+  http-request deny deny_status 404

@@ -1,0 +1,65 @@
+name: Bump Version on Release
+
+# Fires only when a GitHub Release is published as a full (non-prerelease, non-draft) release.
+# Pre-release tags (alphas, betas, RCs, etc.) are excluded automatically because GitHub marks
+# them as pre-releases, which uses the `prereleased` type, not `released`.
+on:
+  release:
+    types: [released]
+
+jobs:
+  bump-version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed to push the commit back
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # target_commitish is the branch (e.g. master) the release was created against
+          ref: ${{ github.event.release.target_commitish }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"   # strip optional leading 'v'
+          # Validate that the version looks like a semver (X.Y or X.Y.Z)
+          if ! echo "${VERSION}" | grep -qE '^[0-9]+\.[0-9]+(\.[0-9]+)?$'; then
+            echo "::error::Tag '${VERSION}' does not look like a release version (expected X.Y or X.Y.Z)."
+            exit 1
+          fi
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # debian/control does not carry the package version in standard Debian packaging;
+      # the canonical version source for .deb packages is debian/changelog only.
+      - name: Update debian/changelog
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          DATE=$(date -R)
+          # Prepend a new changelog entry while keeping the existing history intact.
+          printf 'drove-gateway (%s) unstable; urgency=medium\n\n  * Release %s.\n  * See release notes: %s\n\n -- github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>  %s\n\n' \
+            "${VERSION}" "${VERSION}" "${{ github.event.release.html_url }}" "${DATE}" \
+            | cat - src/debian/changelog > src/debian/changelog.tmp
+          mv src/debian/changelog.tmp src/debian/changelog
+
+      - name: Update RPM spec version
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          sed -i "s/^Version:.*/Version:        ${VERSION}/" src/rpmbuild/SPECS/drove-gateway.spec
+
+      - name: Commit and push version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/debian/changelog src/rpmbuild/SPECS/drove-gateway.spec
+          # Exit cleanly if there is nothing to commit (idempotent re-runs)
+          if git diff --staged --quiet; then
+            echo "Version files already at ${{ steps.version.outputs.VERSION }}, nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore: bump version to ${{ steps.version.outputs.VERSION }} [skip ci]"
+          git push origin HEAD:${{ github.event.release.target_commitish }}

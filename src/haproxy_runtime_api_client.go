@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -17,22 +18,41 @@ import (
 	runtime_options "github.com/haproxytech/client-native/v5/runtime/options"
 )
 
+var apiOpSleepDurations = map[string]time.Duration{
+	"backend_state_retry": 500 * time.Millisecond,
+	"server_state_change": 200 * time.Millisecond,
+	"server_down_poll":    100 * time.Millisecond,
+	"server_delete_retry": 500 * time.Millisecond,
+	"server_add_retry":    500 * time.Millisecond,
+	"server_add_settle":   10 * time.Millisecond,
+}
+
+var apiOpContextTimeoutDurations = map[string]time.Duration{
+	"backend_state_retry": 10 * time.Second,
+	"server_down_poll":    5 * time.Second,
+	"server_delete_retry": 30 * time.Second,
+	"server_add_retry":    10 * time.Second,
+}
+
 type HaproxyManager struct {
 	client                           runtime_api.Runtime
 	add_server_attributes_string     string
 	add_server_ssl_attributes_string string
+	socket_addr                      string
+	manage_global_server_state_file  bool
+	global_server_state_file_path    string
 }
 
-func NewHaproxyManager(ctx context.Context, haproxySocketAddr string, disableLargeBackendCountOptimisation bool, addServerAttributesString string, addServerSSLAttributesString string) (*HaproxyManager, error) {
+func NewHaproxyManager(ctx context.Context, haproxySocketAddr string, disableLargeBackendCountOptimisation bool, addServerAttributesString string, addServerSSLAttributesString string, manageGlobalServerStateFile bool, globalServerStateFilePath string) (*HaproxyManager, error) {
 	logger.WithField("haproxy_socket", haproxySocketAddr).Debug("Preparing to connect to HAProxy runtime API")
 
 	if haproxySocketAddr == "" {
-		return nil, errors.New("HAProxy socket address is not configured")
+		return nil, errors.New("haproxy socket address is not configured")
 	}
 
 	if IsUnixSocketAddr(haproxySocketAddr) {
 		if _, err := os.Stat(haproxySocketAddr); os.IsNotExist(err) {
-			return nil, fmt.Errorf("HAProxy socket file does not exist: %s", haproxySocketAddr)
+			return nil, fmt.Errorf("haproxy socket file does not exist: %s", haproxySocketAddr)
 		}
 	}
 
@@ -46,7 +66,14 @@ func NewHaproxyManager(ctx context.Context, haproxySocketAddr string, disableLar
 	}
 
 	logger.Info("Successfully connected to HAProxy runtime API")
-	return &HaproxyManager{client: runtimeClient, add_server_attributes_string: addServerAttributesString, add_server_ssl_attributes_string: addServerSSLAttributesString}, nil
+	return &HaproxyManager{
+		client:                           runtimeClient,
+		add_server_attributes_string:     addServerAttributesString,
+		add_server_ssl_attributes_string: addServerSSLAttributesString,
+		socket_addr:                      haproxySocketAddr,
+		manage_global_server_state_file:  manageGlobalServerStateFile,
+		global_server_state_file_path:    globalServerStateFilePath,
+	}, nil
 }
 
 func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disableLargeBackendCountOptimisation bool) error {
@@ -127,7 +154,7 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 
 	for backend, hosts := range backendsToReconcile {
 
-		currentServersForBackend := []*runtime_models.RuntimeServer{}
+		var currentServersForBackend []*runtime_models.RuntimeServer
 		backendErr := error(nil)
 		// If we have state for this backend from the aggregated call, use it directly.
 		// This avoids making an additional API call per backend.
@@ -140,7 +167,7 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 			logger.WithField("backend", backend).Debug("No existing servers found for backend in aggregated state. Trying to get state for the backend directly")
 			currentServersForBackend, backendErr = manager.client.GetServersState(backend)
 			if backendErr != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), apiOpContextTimeoutDurations["backend_state_retry"])
 				defer cancel()
 				logger.WithField("backend", backend).Warn("Retrying to get servers state for backend after brief wait. Some backends might take time to exist after a reload")
 			waitBackendGroup:
@@ -148,7 +175,7 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 				case <-ctx.Done():
 					logger.WithFields(logrus.Fields{"backend": backend}).Error("Context timeout waiting to retry get servers state for backend")
 					break waitBackendGroup
-				case <-time.After(500 * time.Millisecond):
+				case <-time.After(apiOpSleepDurations["backend_state_retry"]):
 					currentServersForBackend, backendErr = manager.client.GetServersState(backend)
 					if backendErr == nil {
 						break waitBackendGroup
@@ -184,6 +211,7 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 			reconciledBackends[backend] = true
 		}
 	}
+
 	if len(reconciliationFailedBackends) > 0 || len(reconciledBackends) == 0 {
 		resultLabel = "error"
 		if len(reconciliationFailedBackends) > 0 {
@@ -195,11 +223,22 @@ func (manager *HaproxyManager) ReconcileAllBackends(data *RenderingData, disable
 			logger.WithField("reconciled_backends", reconciledBackends).Error("Failed to reconcile any HAProxy backends")
 			GlobalProxyManager.UpdateAPIUpdatesHealthStatus(false, errors.Join(errors.New("failed to reconcile any HAProxy backends"), err).Error())
 		}
-		return errors.Join(errors.New("Reconciliation failed for some or all HAProxy backends"), err)
+		return errors.Join(errors.New("reconciliation failed for some or all HAProxy backends"), err)
 	} else if len(reconciliationFailedBackends) == 0 {
 		resultLabel = "success"
 		logger.Info("Successfully reconciled all HAProxy backends")
 		GlobalProxyManager.UpdateAPIUpdatesHealthStatus(true, "OK")
+		// After a fully successful reconcile, persist the current server state to the configured
+		// global server state file so HAProxy can restore dynamic server state on the next reload/restart.
+		// Equivalent to: echo "show servers state" | socat stdio unix-connect:<socket> > <stateFile>
+		if err := manager.writeGlobalServerStateFile(); err != nil {
+			Metrics.HaproxyAPICallsFailed.WithLabelValues("write_global_server_state_file").Inc()
+			logger.WithField("error", err).Warning("Failed to write HAProxy global server state file")
+			updateHealthStatus(&health.ServerStateFileUpdate, Metrics.GaugeServerStateFileUpdateHealthy, false, err.Error())
+		} else if manager.manage_global_server_state_file {
+			Metrics.HaproxyAPICallsSuccessful.WithLabelValues("write_global_server_state_file").Inc()
+			updateHealthStatus(&health.ServerStateFileUpdate, Metrics.GaugeServerStateFileUpdateHealthy, true, "OK")
+		}
 	}
 	return nil
 }
@@ -299,14 +338,14 @@ func (manager *HaproxyManager) removeStaleServers(backend string, currentServers
 				Metrics.HaproxyAPICallsFailed.WithLabelValues("set_server_state_drain").Inc()
 				logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name, "error": err}).Error("Failed to set server to drain")
 			}
-			time.Sleep(200 * time.Millisecond) // wait briefly to ensure HAProxy processes the state change
+			time.Sleep(apiOpSleepDurations["server_state_change"]) // wait briefly to ensure HAProxy processes the state change
 			if err := manager.client.SetServerState(backend, srv.Name, "maint"); err != nil {
 				Metrics.HaproxyAPICallsFailed.WithLabelValues("set_server_state_maint").Inc()
 				logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name, "error": err}).Error("Failed to disable server")
 				errs = append(errs, fmt.Sprintf("disable %s: %v", srv.Name, err))
 			} else {
 				Metrics.HaproxyAPICallsSuccessful.WithLabelValues("set_server_state_maint").Inc()
-				time.Sleep(200 * time.Millisecond) // wait briefly to ensure HAProxy processes the state change
+				time.Sleep(apiOpSleepDurations["server_state_change"]) // wait briefly to ensure HAProxy processes the state change
 			}
 			if srvr, err := manager.client.GetServerState(backend, srv.Name); err != nil {
 				errs = append(errs, fmt.Sprintf("refresh after disable %s: %v", srv.Name, err))
@@ -314,7 +353,7 @@ func (manager *HaproxyManager) removeStaleServers(backend string, currentServers
 				logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name, "state": srvr}).Debug("Refreshed server state after disabling server")
 				if srvr.OperationalState != "down" {
 					logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name, "OperationalState": srvr.OperationalState}).Info("Server not yet down state after disabling. Waiting to ensure in-flight connections are terminated.")
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					ctx, cancel := context.WithTimeout(context.Background(), apiOpContextTimeoutDurations["server_down_poll"])
 					defer cancel()
 				waitDownGroup:
 					for err != nil {
@@ -323,7 +362,7 @@ func (manager *HaproxyManager) removeStaleServers(backend string, currentServers
 							logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name}).Error("Context timeout waiting for server to exit 'stopping' state")
 							break waitDownGroup
 						default:
-							time.Sleep(100 * time.Millisecond)
+							time.Sleep(apiOpSleepDurations["server_down_poll"])
 							srvr, err = manager.client.GetServerState(backend, srv.Name)
 							if err == nil {
 								if srvr.OperationalState == "down" {
@@ -340,9 +379,9 @@ func (manager *HaproxyManager) removeStaleServers(backend string, currentServers
 			if err := manager.client.DeleteServer(backend, srv.Name); err != nil {
 				Metrics.HaproxyAPICallsFailed.WithLabelValues("delete_server").Inc()
 				logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name, "error": err}).Error("Failed to delete server")
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(apiOpSleepDurations["server_delete_retry"])
 				//even if server is down, deletion might fail for some time
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), apiOpContextTimeoutDurations["server_delete_retry"])
 				defer cancel()
 			waitDelGroup:
 				for err != nil {
@@ -352,7 +391,7 @@ func (manager *HaproxyManager) removeStaleServers(backend string, currentServers
 						logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name}).Error("Context timeout waiting to retry server deletion")
 						break waitDelGroup
 					default:
-						time.Sleep(500 * time.Millisecond)
+						time.Sleep(apiOpSleepDurations["server_delete_retry"])
 						err = manager.client.DeleteServer(backend, srv.Name)
 						if err == nil {
 							logger.WithFields(logrus.Fields{"backend": backend, "server": srv.Name}).Info("Successfully deleted server after retry")
@@ -391,7 +430,7 @@ func (manager *HaproxyManager) addOrUpdateServers(backend string, desiredServerM
 		}
 	}
 	if len(errs) > 0 {
-		return errors.New(fmt.Sprintf("errors in Add/Update servers: %s", strings.Join(errs, "; ")))
+		return fmt.Errorf("errors in Add/Update servers: %s", strings.Join(errs, "; "))
 	}
 	return nil
 }
@@ -417,14 +456,16 @@ func (manager *HaproxyManager) addNewServer(backend, serverName string, host Hos
 
 	}
 
-	if err := manager.client.AddServer(backend, serverName, fmt.Sprintf("%s:%d %s", host.Host, host.Port, attributes_string)); err != nil {
+	serverEndpoint := formatRuntimeServerEndpoint(host.Host, host.Port)
+
+	if err := manager.client.AddServer(backend, serverName, fmt.Sprintf("%s %s", serverEndpoint, attributes_string)); err != nil {
 		srvr, runErr := manager.client.GetServerState(backend, serverName)
 		if runErr == nil {
 			logger.WithFields(logrus.Fields{"backend": backend, "server": serverName, "srvr": srvr}).Info("Server already exists after failed add attempt. Proceeding to update existing server.")
 			return manager.updateExistingServer(backend, serverName, host, currentServer)
 		} else {
 			//wait for backend to exist in case of recent reload
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), apiOpContextTimeoutDurations["server_add_retry"])
 			defer cancel()
 			logger.WithFields(logrus.Fields{"backend": backend, "server": serverName}).Debug("Retrying to add server after brief wait. Some backends might take time to exist after a reload")
 		waitAddGroup:
@@ -432,9 +473,9 @@ func (manager *HaproxyManager) addNewServer(backend, serverName string, host Hos
 			case <-ctx.Done():
 				logger.WithFields(logrus.Fields{"backend": backend, "server": serverName}).Error("Context timeout waiting to retry add server")
 				break waitAddGroup
-			case <-time.After(500 * time.Millisecond):
-				err = manager.client.AddServer(backend, serverName, fmt.Sprintf("%s:%d %s", host.Host, host.Port, attributes_string))
-				time.Sleep(10 * time.Millisecond)
+			case <-time.After(apiOpSleepDurations["server_add_retry"]):
+				err = manager.client.AddServer(backend, serverName, fmt.Sprintf("%s %s", serverEndpoint, attributes_string))
+				time.Sleep(apiOpSleepDurations["server_add_settle"])
 				srvr, runErr = manager.client.GetServerState(backend, serverName)
 				if err == nil {
 					break waitAddGroup
@@ -512,6 +553,14 @@ func (manager *HaproxyManager) updateExistingServer(backend, serverName string, 
 	return nil
 }
 
+func formatRuntimeServerEndpoint(host string, port int32) string {
+	trimmedHost := strings.TrimSpace(host)
+	if strings.HasPrefix(trimmedHost, "[") && strings.HasSuffix(trimmedHost, "]") {
+		trimmedHost = strings.TrimPrefix(strings.TrimSuffix(trimmedHost, "]"), "[")
+	}
+	return net.JoinHostPort(trimmedHost, strconv.Itoa(int(port)))
+}
+
 // Start of custom functions not available in HAProxy runtime client library
 // getServersStateWithBackend calls "show servers state" command and parses the output to get servers grouped by backend name
 
@@ -522,6 +571,53 @@ func (manager *HaproxyManager) getServersStateWithBackend() (map[string]runtime_
 		return nil, err
 	}
 	return manager.parseRuntimeServersWithBackend(result)
+}
+
+// writeGlobalServerStateFile fetches the current server state from HAProxy over the runtime API
+// socket and writes it to the configured global server state file. This is the equivalent of:
+//
+//	echo "show servers state" | socat stdio unix-connect:<socket> > <stateFile>
+//
+// where <socket> is manager.socket_addr and <stateFile> is manager.global_server_state_file_path.
+// HAProxy loads this file on the next reload/restart (via the global "server-state-file" directive
+// and "load-server-state-from-file") to preserve dynamic server state applied through the runtime API.
+func (manager *HaproxyManager) writeGlobalServerStateFile() error {
+	if !manager.manage_global_server_state_file {
+		return nil
+	}
+	if manager.global_server_state_file_path == "" {
+		return errors.New("global server state file management is enabled but no file path is configured")
+	}
+
+	output, err := manager.executeWithResponse("show servers state")
+	if err != nil {
+		return fmt.Errorf("failed to get servers state for global server state file: %w", err)
+	}
+	if _, err := manager.parseRuntimeServersWithBackend(output); err != nil {
+		return fmt.Errorf("invalid servers state for global server state file: %w", err)
+	}
+
+	// HAProxy expects a trailing newline when parsing the server state file.
+	if !strings.HasSuffix(output, "\n") {
+		output += "\n"
+	}
+
+	fileMode := os.FileMode(0o644)
+	if mode, modeErr := fileModeFromExistingOrDefault(manager.global_server_state_file_path, fileMode); modeErr != nil {
+		return fmt.Errorf("failed to stat global server state file at %q: %w", manager.global_server_state_file_path, modeErr)
+	} else {
+		fileMode = mode
+	}
+
+	if err := writeFileAtomic(manager.global_server_state_file_path, []byte(output), fileMode); err != nil {
+		return fmt.Errorf("failed to atomically write global server state file at %q: %w", manager.global_server_state_file_path, err)
+	}
+
+	logger.WithFields(logrus.Fields{
+		"path":   manager.global_server_state_file_path,
+		"socket": manager.socket_addr,
+	}).Debug("Wrote HAProxy global server state file")
+	return nil
 }
 
 func (manager *HaproxyManager) executeWithResponse(command string) (string, error) {
@@ -543,10 +639,23 @@ func (manager *HaproxyManager) parseRuntimeServersWithBackend(output string) (ma
 	lines := strings.Split(output, "\n")
 	result := make(map[string]runtime_models.RuntimeServers)
 
-	if strings.TrimSpace(lines[0]) != "1" {
-		return nil, fmt.Errorf("unsupported output format version, supporting format version 1")
+	firstDataLine := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		firstDataLine = i
+		break
 	}
-	for _, line := range lines[1:] {
+
+	if firstDataLine == -1 {
+		return nil, errors.New("empty output from show servers state")
+	}
+	if err := validateHaproxyServerStateSchemaVersion(strings.TrimSpace(lines[firstDataLine])); err != nil {
+		return nil, fmt.Errorf("invalid HAProxy runtime server state schema version: %w", err)
+	}
+
+	for _, line := range lines[firstDataLine+1:] {
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "1" {
 			continue
 		}

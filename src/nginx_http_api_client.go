@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -67,7 +69,7 @@ func (manager *NginxAPIManager) UnmarshalServerStruct(server nplus.UpstreamServe
 		}).Error("unable to marshal upstream server struct")
 		return ""
 	}
-	return fmt.Sprintf("%s", jsonData)
+	return string(jsonData)
 }
 
 // ReconcileAllVhosts updates all HTTP vhosts using the NGINX Plus API.
@@ -107,7 +109,7 @@ func (manager *NginxAPIManager) ReconcileAllVhosts(data *RenderingData) error {
 					reconciliationFailedApps[app.Vhost] = true
 					continue
 				}
-				hostAndPortMapping := fmt.Sprintf("%s:%d", ipRecord, t.Port)
+				hostAndPortMapping := formatNginxUpstreamEndpoint(ipRecord, t.Port)
 				newFormattedServers = append(newFormattedServers, hostAndPortMapping)
 			}
 		}
@@ -163,7 +165,7 @@ func (manager *NginxAPIManager) ReconcileAllVhosts(data *RenderingData) error {
 						time.Sleep(5 * time.Millisecond)
 						err = manager.client.CheckIfUpstreamExists(upstreamtocheck)
 						if err == nil {
-							break
+							break waitGroup
 						}
 					}
 				}
@@ -244,4 +246,12 @@ func (manager *NginxAPIManager) ReconcileAllVhosts(data *RenderingData) error {
 		GlobalProxyManager.UpdateAPIUpdatesHealthStatus(true, "OK")
 	}
 	return nil
+}
+
+func formatNginxUpstreamEndpoint(host string, port int32) string {
+	trimmedHost := strings.TrimSpace(host)
+	if strings.HasPrefix(trimmedHost, "[") && strings.HasSuffix(trimmedHost, "]") {
+		trimmedHost = strings.TrimPrefix(strings.TrimSuffix(trimmedHost, "]"), "[")
+	}
+	return net.JoinHostPort(trimmedHost, strconv.Itoa(int(port)))
 }

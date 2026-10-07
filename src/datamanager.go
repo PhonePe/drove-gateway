@@ -2,6 +2,9 @@ package main
 
 import (
 	"fmt"
+	"maps"
+	"slices"
+	"sort"
 	"sync"
 	"time"
 
@@ -55,6 +58,16 @@ type DataManager struct {
 	LastReloadTimestamp            time.Time // Timestamp of creation or modification
 	LastUpstreamAPIUpdateTimestamp time.Time
 	StaticData                     StaticConfig
+}
+
+// DataManagerSnapshot is a serializable copy of runtime metadata required to reconcile
+// when the upstream controller is temporarily unreachable.
+type DataManagerSnapshot struct {
+	Namespaces                     map[string]NamespaceData `json:"namespaces"`
+	LastKnownVhosts                Vhosts                   `json:"last_known_vhosts"`
+	LastKnownBackends              map[string]bool          `json:"last_known_backends"`
+	LastReloadTimestamp            time.Time                `json:"last_reload_timestamp"`
+	LastUpstreamAPIUpdateTimestamp time.Time                `json:"last_upstream_api_update_timestamp"`
 }
 
 // NewDataManager creates a new instance of DataManager
@@ -248,7 +261,7 @@ func (dm *DataManager) ReadApps(namespace string) (map[string]App, error) {
 		"apps":      ns.Apps,
 	}).Trace("ReadApp successfully")
 
-	return ns.Apps, nil //returning copy
+	return cloneApps(ns.Apps), nil //returning copy
 }
 
 func (dm *DataManager) UpdateApps(namespace string, apps map[string]App) error {
@@ -304,7 +317,7 @@ func (dm *DataManager) ReadKnownVhosts(namespace string) (Vhosts, error) {
 		"knownVHosts": ns.KnownVHosts,
 	}).Trace("ReadKnownVhosts successfully")
 
-	return ns.KnownVHosts, nil //returning copy
+	return cloneVhosts(ns.KnownVHosts), nil //returning copy
 }
 
 func (dm *DataManager) ReadAllKnownVhosts() Vhosts {
@@ -424,7 +437,7 @@ func (dm *DataManager) ReadLastKnownVhosts() Vhosts {
 		"LastKnownVhosts": dm.LastKnownVhosts,
 	}).Trace("LastKnownVhosts successfully")
 
-	return dm.LastKnownVhosts //returning copy
+	return cloneVhosts(dm.LastKnownVhosts) //returning copy
 }
 
 func (dm *DataManager) UpdateLastKnownVhosts(inLastKnownVhosts Vhosts) error {
@@ -452,7 +465,7 @@ func (dm *DataManager) ReadLastKnownBackends() map[string]bool {
 		"LastKnownBackends": dm.LastKnownBackends,
 	}).Trace("ReadLastKnownBackends successfully")
 
-	return dm.LastKnownBackends //returning copy
+	return cloneBackends(dm.LastKnownBackends) //returning copy
 }
 
 func (dm *DataManager) UpdateLastKnownBackends(inLastKnownBackends map[string]bool) error {
@@ -479,7 +492,7 @@ func (dm *DataManager) ReadAllNamespace() map[string]NamespaceData {
 		"operation": operation,
 	}).Trace("ReadAllNamespace data successfully")
 
-	return dm.namespaces //returning copy
+	return cloneNamespaces(dm.namespaces) //returning copy
 }
 
 // Read retrieves data from a specific namespace
@@ -495,4 +508,98 @@ func (dm *DataManager) ReadStaticData() StaticConfig {
 	}).Trace("ReadStaticData successfully")
 
 	return dm.StaticData //returning copy
+}
+
+func (dm *DataManager) ExportSnapshot() DataManagerSnapshot {
+	dm.mu.RLock()
+	defer dm.mu.RUnlock()
+
+	return DataManagerSnapshot{
+		Namespaces:                     cloneNamespaces(dm.namespaces),
+		LastKnownVhosts:                cloneVhosts(dm.LastKnownVhosts),
+		LastKnownBackends:              cloneBackends(dm.LastKnownBackends),
+		LastReloadTimestamp:            dm.LastReloadTimestamp,
+		LastUpstreamAPIUpdateTimestamp: dm.LastUpstreamAPIUpdateTimestamp,
+	}
+}
+
+// ImportSnapshot restores last-known runtime metadata for namespaces that still exist in current config.
+// Drove namespace connection/auth details continue to come from nixy.toml.
+func (dm *DataManager) ImportSnapshot(snapshot DataManagerSnapshot) int {
+	return len(dm.ImportSnapshotForNamespaces(snapshot, nil))
+}
+
+// ImportSnapshotForNamespaces restores metadata only for selected namespaces.
+// If namespaces is nil, all namespaces from the snapshot are considered.
+func (dm *DataManager) ImportSnapshotForNamespaces(snapshot DataManagerSnapshot, namespaces map[string]bool) []string {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+
+	restoredNames := make([]string, 0)
+	for namespace, snapshotNamespace := range snapshot.Namespaces {
+		if namespaces != nil && !namespaces[namespace] {
+			continue
+		}
+		current, exists := dm.namespaces[namespace]
+		if !exists {
+			continue
+		}
+
+		current.Leader = snapshotNamespace.Leader
+		current.Apps = cloneApps(snapshotNamespace.Apps)
+		current.KnownVHosts = cloneVhosts(snapshotNamespace.KnownVHosts)
+		if !snapshotNamespace.Timestamp.IsZero() {
+			current.Timestamp = snapshotNamespace.Timestamp
+		}
+		dm.namespaces[namespace] = current
+		restoredNames = append(restoredNames, namespace)
+	}
+
+	// Keep global metadata in sync only when importing all namespaces.
+	if namespaces == nil {
+		dm.LastKnownVhosts = cloneVhosts(snapshot.LastKnownVhosts)
+		dm.LastKnownBackends = cloneBackends(snapshot.LastKnownBackends)
+		dm.LastReloadTimestamp = snapshot.LastReloadTimestamp
+		dm.LastUpstreamAPIUpdateTimestamp = snapshot.LastUpstreamAPIUpdateTimestamp
+	}
+
+	sort.Strings(restoredNames)
+	return restoredNames
+}
+
+func cloneBackends(backends map[string]bool) map[string]bool {
+	return maps.Clone(backends)
+}
+
+func cloneVhosts(source Vhosts) Vhosts {
+	cloned := source
+	cloned.Vhosts = maps.Clone(source.Vhosts)
+	return cloned
+}
+
+func cloneApps(apps map[string]App) map[string]App {
+	cloned := maps.Clone(apps)
+	for appID, app := range cloned {
+		app.Hosts = slices.Clone(app.Hosts)
+		app.Tags = maps.Clone(app.Tags)
+		app.Groups = maps.Clone(app.Groups)
+		for groupName, group := range app.Groups {
+			group.Hosts = slices.Clone(group.Hosts)
+			group.Tags = maps.Clone(group.Tags)
+			app.Groups[groupName] = group
+		}
+		cloned[appID] = app
+	}
+	return cloned
+}
+
+func cloneNamespaces(namespaces map[string]NamespaceData) map[string]NamespaceData {
+	cloned := maps.Clone(namespaces)
+	for namespace, data := range cloned {
+		data.Drove.Drove = slices.Clone(data.Drove.Drove)
+		data.Apps = cloneApps(data.Apps)
+		data.KnownVHosts = cloneVhosts(data.KnownVHosts)
+		cloned[namespace] = data
+	}
+	return cloned
 }

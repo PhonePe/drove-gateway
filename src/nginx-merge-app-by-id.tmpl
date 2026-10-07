@@ -21,7 +21,7 @@ stream {
     {{- end}}
         least_conn;
         {{- range $task := $app.Tasks}}
-        server {{ $task.Host }}:{{ index $task.Ports $id}}{{- with index $task.Labels "weight"}} weight={{ .  }}{{- end}};
+        server {{ hostport $task.Host (index $task.Ports $id)}}{{- with index $task.Labels "weight"}} weight={{ .  }}{{- end}};
         {{- end}}
     }
     server {

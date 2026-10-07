@@ -11,6 +11,24 @@ case "$1" in
             fi
         fi
 
+        # Install systemd drop-ins for the proxy units by copying the example files shipped with
+        # the package. Every proxy (re)start/reload then signals Drove Gateway to reconcile, and
+        # (for HAProxy) refreshes the drove-managed #DROVE-SERVERS blocks before HAProxy reads its
+        # config. See usr/share/doc/drove-gateway/examples/{haproxy,nginx}.service.d/.
+        if [ -d /run/systemd/system ]; then
+            examples_dir="/usr/share/doc/drove-gateway/examples"
+            for unit in haproxy nginx; do
+                src_dropin="${examples_dir}/${unit}.service.d/10-drove-gateway-reconcile.conf"
+                dropin_dir="/etc/systemd/system/${unit}.service.d"
+                dropin_file="$dropin_dir/10-drove-gateway-reconcile.conf"
+                if [ -f "$src_dropin" ]; then
+                    mkdir -p "$dropin_dir"
+                    install -m 0644 "$src_dropin" "$dropin_file"
+                fi
+            done
+            systemctl daemon-reload >/dev/null 2>&1 || true
+        fi
+
         if [ ! -d /etc/nixy ]; then
             mkdir -p /etc/nixy
             chmod 755 /etc/nixy
