@@ -11,7 +11,8 @@ jobs:
   bump-version:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # needed to push the commit back
+      contents: write      # needed to push the bump branch
+      pull-requests: write # needed to open the version bump PR
 
     steps:
       - name: Checkout target branch
@@ -39,27 +40,48 @@ jobs:
       - name: Update debian/changelog
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
-          DATE=$(date -R)
-          # Prepend a new changelog entry while keeping the existing history intact.
-          printf 'drove-gateway (%s) unstable; urgency=medium\n\n  * Release %s.\n  * See release notes: %s\n\n -- github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>  %s\n\n' \
-            "${VERSION}" "${VERSION}" "${{ github.event.release.html_url }}" "${DATE}" \
-            | cat - src/debian/changelog > src/debian/changelog.tmp
-          mv src/debian/changelog.tmp src/debian/changelog
+          # Skip the entry if the top changelog line already has this version.
+          # This keeps re-releases and hand-written entries from making duplicates.
+          if head -1 src/debian/changelog | grep -q "^drove-gateway (${VERSION}) "; then
+            echo "debian/changelog already at ${VERSION}."
+          else
+            DATE=$(date -R)
+            # Prepend a new changelog entry while keeping the existing history intact.
+            printf 'drove-gateway (%s) unstable; urgency=medium\n\n  * Release %s.\n  * See release notes: %s\n\n -- github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>  %s\n\n' \
+              "${VERSION}" "${VERSION}" "${{ github.event.release.html_url }}" "${DATE}" \
+              | cat - src/debian/changelog > src/debian/changelog.tmp
+            mv src/debian/changelog.tmp src/debian/changelog
+          fi
 
       - name: Update RPM spec version
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           sed -i "s/^Version:.*/Version:        ${VERSION}/" src/rpmbuild/SPECS/drove-gateway.spec
 
-      - name: Commit and push version bump
+      - name: Open version bump pull request
+        env:
+          TARGET_BRANCH: ${{ github.event.release.target_commitish }}
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add src/debian/changelog src/rpmbuild/SPECS/drove-gateway.spec
           # Exit cleanly if there is nothing to commit (idempotent re-runs)
           if git diff --staged --quiet; then
-            echo "Version files already at ${{ steps.version.outputs.VERSION }}, nothing to commit."
+            echo "Version files already at ${VERSION}, nothing to commit."
             exit 0
           fi
-          git commit -m "chore: bump version to ${{ steps.version.outputs.VERSION }} [skip ci]"
-          git push origin HEAD:${{ github.event.release.target_commitish }}
+          BRANCH="chore/bump-version-${VERSION}"
+          # Reuse the same branch so a new release updates the open PR, if any.
+          git checkout -B "${BRANCH}"
+          git commit -m "chore: bump version to ${VERSION}"
+          # Force push keeps the branch current with the target branch head.
+          git push --force origin "${BRANCH}"
+          # A maintainer approves and merges the PR; master rules need one approval.
+          gh pr create \
+            --base "${TARGET_BRANCH}" \
+            --head "${BRANCH}" \
+            --title "chore: bump version to ${VERSION}" \
+            --body "Automated version bump for release ${VERSION}." \
+            || echo "PR may already exist; continuing."
